@@ -17,7 +17,6 @@
           <a href="/analytics">AI Search Analytics</a>
           <a href="#product">Product</a>
           <a href="#resources">Resources</a>
-          <a href="#pricing">Pricing</a>
           <a href="#contact">Contact</a>
         </nav>
         <div class="header-actions">
@@ -269,7 +268,7 @@
             const profileLabel = `Profile (${j.user.username})`;
             authLink.textContent = profileLabel;
             authLink.href = '/profile';
-            if(mobileAuthLink){ mobileAuthLink.textContent = profileLabel; mobileAuthLink.href = '/profile'; }
+            if(mobileAuthLink){ mobileAuthLink.textContent = 'Open analytics'; mobileAuthLink.href = '/analytics'; }
           } else {
             authLink.textContent = 'Login';
             authLink.href = '/login';
