@@ -1,4 +1,4 @@
-const CACHE_NAME = 'trysearch-shell-v9';
+const CACHE_NAME = 'trysearch-shell-v10';
 const APP_SHELL = [
   '/',
   '/offline.html',
@@ -17,8 +17,7 @@ const APP_SHELL = [
   '/three-home.js',
   '/pwa.js',
   '/manifest.webmanifest',
-  '/pwa-icon.svg',
-  '/pwa-maskable.svg'
+  '/trysearch-logo.png'
 ];
 
 self.addEventListener('install', (event) => {
