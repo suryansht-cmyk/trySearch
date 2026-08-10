@@ -431,6 +431,9 @@ textarea {
 }
 
 .feature-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
   padding: 2rem;
   background: rgba(255, 255, 252, 0.05);
   border: 1px solid rgba(190, 183, 164, 0.25);
@@ -440,6 +443,13 @@ textarea {
 .feature-card h2 {
   margin: 0 0 1rem;
   font-size: 1.25rem;
+  text-align: left;
+}
+
+.feature-card .main-mvp {
+  align-self: flex-end;
+  margin-top: auto;
+  text-align: right;
 }
 
 .section-highlight {
@@ -789,3 +799,7 @@ textarea {
 .table-wrap th, .table-wrap td { min-width: 120px; }
 
 #message_image { border-radius: 50px; }
+
+.main-mvp {
+  color: rgb(255, 128, 0);
+}
