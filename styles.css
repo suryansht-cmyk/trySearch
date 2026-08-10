@@ -377,6 +377,10 @@ textarea {
   overflow: visible;
 }
 
+.chart[data-visibility-chart] { overflow: hidden; }
+
+.chart[data-visibility-chart].is-updating svg { animation: chart-refresh 420ms ease; }
+
 .chart-grid path {
   fill: none;
   stroke: rgba(0, 0, 0, 0.12);
@@ -415,6 +419,11 @@ textarea {
   fill: var(--ink-muted);
   font-size: 9px;
   font-weight: 600;
+}
+
+@keyframes chart-refresh {
+  0% { opacity: 0.58; transform: translateY(3px); }
+  100% { opacity: 1; transform: translateY(0); }
 }
 
 .detail-row {

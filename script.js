@@ -238,4 +238,74 @@ document.addEventListener('DOMContentLoaded', () => {
     updateParallax();
     window.addEventListener('scroll', requestParallax, { passive: true });
   }
+
+  const visibilityChart = document.querySelector('[data-visibility-chart]');
+  const heroVisibilityScore = document.querySelector('#hero-visibility-score');
+
+  if (visibilityChart) {
+    const labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    let visibilityValues = [56, 59, 58, 65, 63, 72, 70, 79, 77, 85, 88, 92];
+    let chartTick = 0;
+
+    const buildChart = (animateLine = false) => {
+      const min = 45;
+      const max = 100;
+      const left = 24;
+      const right = 296;
+      const top = 22;
+      const bottom = 118;
+      const xStep = (right - left) / (visibilityValues.length - 1);
+      const points = visibilityValues.map((value, index) => {
+        const x = left + index * xStep;
+        const y = bottom - ((value - min) / (max - min)) * (bottom - top);
+        return [x.toFixed(1), y.toFixed(1)];
+      });
+      const linePath = `M${points.map(([x, y]) => `${x} ${y}`).join(' L')}`;
+      const areaPath = `${linePath} L${right} ${bottom} L${left} ${bottom} Z`;
+      const [lastX, lastY] = points[points.length - 1];
+      const current = visibilityValues[visibilityValues.length - 1];
+      const labelIndexes = [0, 3, 7, 11];
+      const labelSvg = labelIndexes.map((index) => `<text x="${points[index][0]}" y="142" text-anchor="middle">${labels[index]}</text>`).join('');
+
+      visibilityChart.innerHTML = `
+        <svg viewBox="0 0 320 156" aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id="visibility-area" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#ff7f11" stop-opacity="0.38" /><stop offset="100%" stop-color="#ff7f11" stop-opacity="0.02" /></linearGradient>
+            <filter id="visibility-glow" x="-20%" y="-30%" width="140%" height="160%"><feGaussianBlur stdDeviation="3" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
+          </defs>
+          <g class="chart-grid" aria-hidden="true"><path d="M24 28H296M24 58H296M24 88H296M24 118H296" /></g>
+          <path class="chart-area" d="${areaPath}" />
+          <path class="chart-line" d="${linePath}" />
+          <circle class="chart-point" cx="${lastX}" cy="${lastY}" r="5" filter="url(#visibility-glow)" />
+          <g class="chart-score"><rect x="257" y="3" width="39" height="20" rx="10" /><text x="276.5" y="17" text-anchor="middle">${current}%</text></g>
+          <g class="chart-labels" aria-hidden="true">${labelSvg}</g>
+        </svg>`;
+      visibilityChart.setAttribute('aria-label', `AI visibility score is ${current} percent, up from ${visibilityValues[0]} percent over the last twelve months.`);
+      if (heroVisibilityScore) heroVisibilityScore.textContent = `${current}%`;
+
+      const line = visibilityChart.querySelector('.chart-line');
+      if (animateLine && line && !reducedMotion.matches) {
+        const length = line.getTotalLength();
+        line.style.strokeDasharray = `${length}`;
+        line.style.strokeDashoffset = `${length}`;
+        window.requestAnimationFrame(() => { line.style.transition = 'stroke-dashoffset 900ms cubic-bezier(.22, 1, .36, 1)'; line.style.strokeDashoffset = '0'; });
+      }
+    };
+
+    const updateChart = () => {
+      if (document.hidden || reducedMotion.matches) return;
+      const changes = [1, 1, 2, -1, 1, 2, 0];
+      const currentValue = visibilityValues[visibilityValues.length - 1];
+      const next = Math.max(55, Math.min(96, currentValue + changes[chartTick % changes.length]));
+      chartTick += 1;
+      visibilityValues = [...visibilityValues.slice(1), next];
+      visibilityChart.classList.remove('is-updating');
+      void visibilityChart.offsetWidth;
+      visibilityChart.classList.add('is-updating');
+      buildChart(false);
+    };
+
+    buildChart(true);
+    window.setInterval(updateChart, 7000);
+  }
 });
