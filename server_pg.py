@@ -1255,6 +1255,76 @@ def master_workspace_response(workspace, status='ready'):
     }
 
 
+def master_workspace_summary(user_id):
+    """Return the latest, linked state for every product in a master workspace."""
+    workspace = master_workspace_for_user(user_id)
+    if not workspace:
+        return None
+
+    with engine.connect() as conn:
+        analytics_run = conn.execute(select(analytics_runs).where(
+            analytics_runs.c.project_id == workspace['analytics_project_id']
+        ).order_by(desc(analytics_runs.c.created_at)).limit(1)).mappings().first()
+        visibility_scan = conn.execute(select(visibility_scans).where(
+            visibility_scans.c.watchlist_id == workspace['visibility_watchlist_id']
+        ).order_by(desc(visibility_scans.c.created_at)).limit(1)).mappings().first()
+        queries = conn.execute(select(prompt_queries).where(
+            prompt_queries.c.collection_id == workspace['prompt_collection_id']
+        ).order_by(desc(prompt_queries.c.created_at))).mappings().all()
+        query_ids = [query['id'] for query in queries]
+        prompt_results = []
+        if query_ids:
+            prompt_results = conn.execute(select(prompt_query_results).where(
+                prompt_query_results.c.query_id.in_(query_ids)
+            ).order_by(desc(prompt_query_results.c.created_at))).mappings().all()
+        document = conn.execute(select(content_documents).where(
+            content_documents.c.id == workspace['content_document_id']
+        )).mappings().first()
+
+    analysed_prompts = len(prompt_results)
+    prompt_visibility = round(sum(result['visibility_score'] for result in prompt_results) / analysed_prompts) if analysed_prompts else None
+    prompt_citations = round(100 * sum(result['cited'] == 'Yes' for result in prompt_results) / analysed_prompts) if analysed_prompts else None
+    latest_prompt_result = prompt_results[0] if prompt_results else None
+
+    return {
+        'workspace': row_to_dict(workspace),
+        'analytics': {
+            'visibility_score': analytics_run['visibility_score'] if analytics_run else None,
+            'citation_rate': analytics_run['citation_rate'] if analytics_run else None,
+            'mention_rate': analytics_run['mention_rate'] if analytics_run else None,
+            'summary': analytics_run['summary'] if analytics_run else 'Run an analytics scan to establish your baseline.',
+        },
+        'visibility': {
+            'visibility_score': visibility_scan['visibility_score'] if visibility_scan else None,
+            'mentions_found': visibility_scan['mentions_found'] if visibility_scan else None,
+            'citations_found': visibility_scan['citations_found'] if visibility_scan else None,
+            'summary': visibility_scan['summary'] if visibility_scan else 'Run a visibility scan to find answer appearances.',
+        },
+        'prompts': {
+            'tracked_prompts': len(queries),
+            'analysed_prompts': analysed_prompts,
+            'average_visibility': prompt_visibility,
+            'citation_rate': prompt_citations,
+            'recommendation': latest_prompt_result['recommendation'] if latest_prompt_result else 'Add a prompt to begin building your answer landscape.',
+        },
+        'content': {
+            'title': document['title'] if document else 'No content brief yet',
+            'status': document['status'] if document else 'Not started',
+            'seo_title': document['seo_title'] if document else '',
+            'keyword': document['keyword'] if document else workspace['topic'],
+        },
+    }
+
+
+@app.route('/api/master-workspace/summary')
+def master_workspace_summary_endpoint():
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    summary = master_workspace_summary(user_id)
+    return jsonify({'workspace': None} if not summary else summary)
+
+
 @app.route('/api/master-workspace', methods=['GET', 'POST'])
 def master_workspace_endpoint():
     user_id, auth_error = analytics_user_id()
@@ -1359,6 +1429,13 @@ def master_workspace_endpoint():
 
     workspace = master_workspace_for_user(user_id)
     return jsonify(master_workspace_response(workspace or {'id': workspace_id}, 'ready')), 201
+
+
+@app.route('/workspace')
+def workspace_page():
+    if not session.get('user_id'):
+        return redirect('/login')
+    return send_from_directory(BASE_DIR, 'workspace.html')
 
 
 @app.route('/profile')

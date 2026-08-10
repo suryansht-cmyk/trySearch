@@ -10,7 +10,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const contactFormNote = document.querySelector('#contact-form-note');
   const masterSetupForm = document.querySelector('#master-setup-form');
   const masterSetupNote = document.querySelector('#master-setup-note');
-  const masterReady = document.querySelector('#master-ready');
 
   function closeMobileNav() {
     if (!mobileNav || !toggleButton) return;
@@ -109,34 +108,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  if (masterSetupForm && masterSetupNote && masterReady) {
+  if (masterSetupForm && masterSetupNote) {
     const masterSetupButton = document.querySelector('#master-setup-button');
-    const masterReadyTitle = document.querySelector('#master-ready-title');
-    const masterReadyLinks = document.querySelector('#master-ready-links');
 
     function resetMasterSetup() {
       masterSetupForm.reset();
-      masterSetupForm.hidden = false;
-      masterReady.hidden = true;
-      masterReadyTitle.textContent = '';
-      masterReadyLinks.replaceChildren();
       masterSetupNote.textContent = '';
       masterSetupNote.className = 'form-note';
-    }
-
-    function showMasterWorkspace(data) {
-      if (!data || !data.workspace) return;
-      masterSetupForm.hidden = true;
-      masterReady.hidden = false;
-      masterReadyTitle.textContent = `${data.workspace.brand_name} is set up across trySearch.`;
-      masterReadyLinks.innerHTML = '';
-      (data.tools || []).forEach((tool) => {
-        const link = document.createElement('a');
-        link.href = tool.href;
-        link.textContent = `Open ${tool.name}`;
-        masterReadyLinks.appendChild(link);
-      });
-      masterSetupNote.textContent = '';
     }
 
     masterSetupForm.addEventListener('submit', async (event) => {
@@ -160,7 +138,7 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
         if (!response.ok) throw new Error(data.error || 'We could not set up your workspace. Please try again.');
-        showMasterWorkspace(data);
+        window.location.assign('/workspace');
       } catch (error) {
         masterSetupNote.textContent = error.message || 'We could not set up your workspace. Please try again.';
         masterSetupNote.className = 'form-note alert alert-error';
