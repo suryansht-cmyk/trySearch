@@ -1098,3 +1098,51 @@ html.js-motion .reveal.tilt-card.is-visible {
   .master-form-note { grid-column: auto; }
   .master-ready-links { grid-template-columns: 1fr; }
 }
+
+/* Cross-device baseline: keep content in its column, preserve readable type,
+   and make every control comfortable to use with a finger. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
+button,
+input,
+select,
+textarea { max-width: 100%; }
+
+button,
+input,
+select { min-height: 2.75rem; }
+
+input,
+textarea,
+select { font-size: max(1rem, 16px); }
+
+h1, h2, h3, p, a, button, label, td, th { overflow-wrap: anywhere; }
+
+@media (max-width: 900px) {
+  .site-nav { gap: 1rem; font-size: 0.9rem; }
+  .header-inner { gap: 0.7rem; }
+  .footer-grid { gap: 1.5rem; }
+}
+
+@media (max-width: 720px) {
+  .account-header .header-inner { flex-wrap: wrap; }
+  .account-header .header-actions {
+    display: flex;
+    order: 3;
+    width: 100%;
+    max-width: 100%;
+    gap: 0.9rem;
+    overflow-x: auto;
+    padding: 0.1rem 0 0.25rem;
+    -webkit-overflow-scrolling: touch;
+  }
+  .account-header .header-actions a { flex: 0 0 auto; }
+}
+
+@media (max-width: 420px) {
+  .container { max-width: calc(100% - 1rem); padding: 0 0.5rem; }
+  .section { padding: 2.25rem 0; }
+  .account-card { padding: 1.15rem; }
+  .site-footer { padding-top: 3rem; }
+  .footer-bottom { font-size: 0.82rem; }
+}

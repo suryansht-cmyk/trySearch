@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#ff7f11" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
     <title>Content Studio — trySearch</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/pwa-icon.svg" />
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/analytics.css" />
     <link rel="stylesheet" href="/content_studio.css" />
@@ -41,6 +45,7 @@
     </main>
 
     <dialog class="project-dialog" id="document-dialog" aria-labelledby="document-dialog-title"><form id="document-form"><button class="dialog-close" id="close-document-dialog" type="button" aria-label="Close">×</button><p class="eyebrow">New content brief</p><h2 id="document-dialog-title">Give the writer a clear direction.</h2><p class="dialog-copy">You can edit every part of the generated draft afterwards.</p><label>Working title<input name="title" placeholder="How to choose a project management platform" required /></label><label>Brand name<input name="brand_name" placeholder="Acme" required /></label><label>Target topic or keyword<input name="keyword" placeholder="project management software" required /></label><div class="brief-selects"><label>Content type<select name="content_type"><option>Blog post</option><option>Landing page</option><option>Comparison page</option><option>Product page</option><option>Email</option></select></label><label>Tone<select name="tone"><option>Expert</option><option>Conversational</option><option>Confident</option><option>Educational</option></select></label></div><p class="dialog-error" id="document-error" role="alert" hidden></p><button class="button button-primary" id="save-new-document" type="submit">Create content brief</button></form></dialog>
+    <script src="/pwa.js"></script>
     <script src="/content_studio.js"></script>
   </body>
 </html>

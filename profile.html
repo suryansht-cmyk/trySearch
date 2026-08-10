@@ -3,11 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#ff7f11" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
     <title>Your profile — trySearch</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/pwa-icon.svg" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body class="account-page">
-    <header class="site-header">
+    <header class="site-header account-header">
       <div class="container header-inner">
         <a href="/" class="brand" aria-label="trySearch home">
           <span class="brand-mark">t</span>
@@ -38,6 +42,7 @@
       </section>
     </main>
 
+    <script src="/pwa.js"></script>
     <script>
       const errorMessage = document.getElementById('profile-error');
       const loadingMessage = document.getElementById('profile-loading');

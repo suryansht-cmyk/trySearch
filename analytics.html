@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#ff7f11" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
     <title>AI Search Analytics — trySearch</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/pwa-icon.svg" />
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/analytics.css" />
   </head>
@@ -90,6 +94,7 @@
         <button class="button button-primary" id="save-project" type="submit">Create workspace</button>
       </form>
     </dialog>
+    <script src="/pwa.js"></script>
     <script src="/analytics.js"></script>
   </body>
 </html>

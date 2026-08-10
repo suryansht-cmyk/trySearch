@@ -48,3 +48,23 @@
   .analytics-shell .summary-card,
   .analytics-shell .project-bar { transition: none; }
 }
+
+@media (max-width: 900px) {
+  .analytics-nav { gap: .8rem; font-size: .88rem; }
+  .analytics-shell { padding-top: 2.75rem; padding-bottom: 3.5rem; }
+  .analytics-topbar { padding-bottom: 1.8rem; }
+}
+
+@media (max-width: 700px) {
+  .analytics-nav { display: none; }
+  .analytics-logout { width: auto; padding: .65rem .8rem; }
+  .project-dialog { max-height: calc(100dvh - 1.5rem); overflow-y: auto; }
+}
+
+@media (max-width: 420px) {
+  .analytics-topbar h1 { font-size: clamp(2rem, 11vw, 2.65rem); }
+  .project-bar { padding: .8rem; border-radius: 1rem; }
+  .summary-card { align-items: flex-start; padding: 1rem; }
+  .analytics-empty { padding: 1.75rem 1rem; border-radius: 1.1rem; }
+  .engine-row { grid-template-columns: minmax(5.75rem, 1fr) 1fr auto; font-size: .82rem; }
+}

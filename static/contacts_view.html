@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#ff7f11" />
   <title>Contacts Viewer</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
   <style>
     :root{--black:#000000ff;--porcelain:#fffffcff;--khaki-beige:#beb7a4ff;--vivid-tangerine:#ff7f11ff;--blazing-flame:#ff3f00ff;--bg:var(--porcelain);--card:rgba(255,255,252,.88);--muted:rgba(0,0,0,.68);--accent:var(--vivid-tangerine)}
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial; background:radial-gradient(circle at top left,rgba(255,127,17,.16),transparent 35%),var(--bg);margin:0;color:var(--black)}
@@ -12,7 +14,7 @@
     h1{margin:0 0 10px;font-size:1.25rem}
     .meta{color:var(--muted);font-size:0.95rem;margin-bottom:12px}
     .controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
-    button{background:var(--accent);color:var(--black);border:none;padding:8px 12px;border-radius:8px;cursor:pointer}
+    button{background:var(--accent);color:var(--black);border:none;padding:8px 12px;min-height:44px;border-radius:8px;cursor:pointer}
     button.secondary{background:rgba(190,183,164,.16);color:var(--black);border:1px solid rgba(190,183,164,.8)}
     .status{font-size:0.95rem;color:var(--muted)}
     table{width:100%;border-collapse:collapse;margin-top:12px}
@@ -21,7 +23,8 @@
     .nowrap{white-space:nowrap}
     .center{text-align:center}
     .empty{padding:30px;text-align:center;color:var(--muted)}
-    @media (max-width:720px){table,thead,tbody,tr,th,td{display:block}thead{display:none}tr{margin-bottom:12px}td{border:none;padding:8px;background:rgba(255,255,252,.88);border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.1)}td:before{content:attr(data-label);font-weight:600;display:block;margin-bottom:6px;color:var(--muted)}}
+    @media (max-width:720px){.wrap{margin:20px auto;padding:12px}.controls .status{width:100%;padding-top:4px}table,thead,tbody,tr,th,td{display:block}thead{display:none}tr{margin-bottom:12px}td{border:none;padding:8px;background:rgba(255,255,252,.88);border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.1);overflow-wrap:anywhere}td:before{content:attr(data-label);font-weight:600;display:block;margin-bottom:6px;color:var(--muted)}}
+    @media (max-width:420px){.wrap{margin:12px auto;padding:8px}.card{padding:14px;border-radius:9px}.controls button{flex:1 1 calc(50% - 4px)}.controls .status{font-size:.86rem}.meta{overflow-wrap:anywhere}}
   </style>
 </head>
 <body>
@@ -44,6 +47,7 @@
     </div>
   </div>
 
+  <script src="/pwa.js"></script>
   <script>
     const params = new URLSearchParams(location.search);
     const apiFromQuery = params.get('api');
