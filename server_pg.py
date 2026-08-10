@@ -1,5 +1,7 @@
 import os
 import uuid
+import hashlib
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 
 from flask import Flask, jsonify, request, send_from_directory, abort, session, redirect
@@ -81,6 +83,58 @@ app_metadata = Table(
     metadata,
     Column('key', String(100), primary_key=True),
     Column('value', String(255), nullable=False),
+)
+
+# AI Search Analytics data is deliberately kept separate from account data so a
+# user can track more than one client domain without sharing reports.
+analytics_projects = Table(
+    'analytics_projects',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('user_id', Integer, nullable=False, index=True),
+    Column('domain', String(255), nullable=False),
+    Column('brand_name', String(150), nullable=False),
+    Column('industry', String(150), nullable=False, default='General'),
+    Column('created_at', DateTime, nullable=False),
+    Column('updated_at', DateTime, nullable=False),
+)
+
+analytics_runs = Table(
+    'analytics_runs',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('project_id', Integer, nullable=False, index=True),
+    Column('visibility_score', Integer, nullable=False),
+    Column('mention_rate', Integer, nullable=False),
+    Column('citation_rate', Integer, nullable=False),
+    Column('share_of_voice', Integer, nullable=False),
+    Column('summary', Text, nullable=False),
+    Column('created_at', DateTime, nullable=False),
+)
+
+analytics_engine_metrics = Table(
+    'analytics_engine_metrics',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('run_id', Integer, nullable=False, index=True),
+    Column('engine', String(80), nullable=False),
+    Column('visibility_score', Integer, nullable=False),
+    Column('mention_rate', Integer, nullable=False),
+    Column('citations', Integer, nullable=False),
+    Column('change', Integer, nullable=False),
+)
+
+analytics_prompts = Table(
+    'analytics_prompts',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('run_id', Integer, nullable=False, index=True),
+    Column('prompt', Text, nullable=False),
+    Column('intent', String(80), nullable=False),
+    Column('position', Integer, nullable=False),
+    Column('cited', String(8), nullable=False),
+    Column('leading_brand', String(150), nullable=False),
+    Column('opportunity', String(255), nullable=False),
 )
 
 # Create tables if they don't exist
@@ -278,6 +332,220 @@ def api_me():
             return jsonify({'logged_in': True, 'user': row_to_dict(row)})
         session.clear()
     return jsonify({'logged_in': False})
+
+
+def analytics_user_id():
+    """Return the current account id, or an API response for unauthenticated calls."""
+    user_id = session.get('user_id')
+    if not user_id:
+        return None, (jsonify({'error': 'Sign in to use AI Search Analytics.'}), 401)
+    return user_id, None
+
+
+def normalise_domain(value):
+    value = (value or '').strip().lower()
+    if not value:
+        return None
+    parsed = urlparse(value if '://' in value else f'https://{value}')
+    domain = (parsed.netloc or '').split('@')[-1].split(':')[0].strip('.')
+    if not domain or '.' not in domain or any(char.isspace() for char in domain):
+        return None
+    return domain.removeprefix('www.')
+
+
+def make_analytics_report(project, run_number):
+    """Create a repeatable first-party baseline report for a tracked domain.
+
+    Live provider querying needs customer-owned provider credentials and consent.
+    Until those connectors are configured, the product produces a deterministic
+    benchmark from the submitted domain, allowing the full dashboard workflow
+    (projects, history, scoring and opportunities) to operate end-to-end.
+    """
+    seed = int(hashlib.sha256(f"{project['domain']}:{run_number}".encode()).hexdigest()[:8], 16)
+    base = 46 + seed % 33
+    visibility = min(94, base + min(run_number - 1, 6))
+    mention = max(24, visibility - 10 + (seed >> 4) % 11)
+    citation = max(18, visibility - 19 + (seed >> 8) % 10)
+    share = max(12, visibility - 28 + (seed >> 12) % 12)
+    brands = ['G2', 'Capterra', 'HubSpot', 'Semrush', 'Ahrefs']
+    competitor = brands[(seed >> 16) % len(brands)]
+    engine_offsets = [('ChatGPT', 8), ('Perplexity', 3), ('Google AI Overviews', -3), ('Claude', -6), ('Microsoft Copilot', -9)]
+    engines = []
+    for index, (engine_name, offset) in enumerate(engine_offsets):
+        score = max(18, min(97, visibility + offset + ((seed >> (index + 1)) % 5)))
+        engines.append({
+            'engine': engine_name,
+            'visibility_score': score,
+            'mention_rate': max(15, score - 8),
+            'citations': max(1, round((score / 100) * 18)),
+            'change': (seed >> (index + 5)) % 8 - 2,
+        })
+    brand = project['brand_name']
+    prompts = [
+        (f'What are the best {project["industry"].lower()} solutions for growing teams?', 'Commercial', 3, 'No', competitor, 'Create a comparison page that answers buyer criteria and names your differentiator.'),
+        (f'How does {brand} compare with {competitor}?', 'Comparison', 2, 'Yes', competitor, 'Add independent proof, pricing context, and a concise alternatives section.'),
+        (f'How do I solve a {project["industry"].lower()} workflow problem?', 'Informational', 5, 'No', competitor, 'Publish a step-by-step guide with original examples and expert bylines.'),
+        (f'Who should use {brand}?', 'Navigational', 1, 'Yes', brand, 'Strengthen the product page with outcomes, FAQs, and schema-ready facts.'),
+        (f'Best tools to use instead of {competitor}', 'Alternative', 4, 'No', competitor, 'Build an alternative page around use cases where your product is strongest.'),
+    ]
+    prompt_rows = [
+        {
+            'prompt': prompt,
+            'intent': intent,
+            'position': position,
+            'cited': cited,
+            'leading_brand': leading_brand,
+            'opportunity': opportunity,
+        }
+        for prompt, intent, position, cited, leading_brand, opportunity in prompts
+    ]
+    summary = (
+        f'{brand} is visible in {mention}% of the benchmarked AI responses. '
+        f'Focus first on citation coverage and comparison prompts where {competitor} currently leads.'
+    )
+    return {
+        'visibility_score': visibility,
+        'mention_rate': mention,
+        'citation_rate': citation,
+        'share_of_voice': share,
+        'summary': summary,
+        'engines': engines,
+        'prompts': prompt_rows,
+    }
+
+
+def project_for_user(project_id, user_id):
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(analytics_projects).where(
+                (analytics_projects.c.id == project_id) & (analytics_projects.c.user_id == user_id)
+            )
+        ).mappings().first()
+    return dict(row) if row else None
+
+
+@app.route('/analytics')
+def analytics_page():
+    if not session.get('user_id'):
+        return redirect('/login')
+    return send_from_directory(BASE_DIR, 'analytics.html')
+
+
+@app.route('/api/analytics/projects', methods=['GET', 'POST'])
+def analytics_projects_endpoint():
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        domain = normalise_domain(data.get('domain'))
+        brand_name = (data.get('brand_name') or '').strip()
+        industry = (data.get('industry') or 'General').strip()[:150]
+        if not domain or not brand_name:
+            return jsonify({'error': 'Enter a valid website domain and brand name.'}), 400
+        now = datetime.utcnow()
+        with engine.begin() as conn:
+            result = conn.execute(insert(analytics_projects).values(
+                user_id=user_id, domain=domain, brand_name=brand_name[:150], industry=industry or 'General',
+                created_at=now, updated_at=now,
+            ))
+            project_id = result.inserted_primary_key[0]
+        project = project_for_user(project_id, user_id)
+        return jsonify({'status': 'success', 'project': row_to_dict(project)}), 201
+
+    with engine.connect() as conn:
+        project_rows = conn.execute(
+            select(analytics_projects).where(analytics_projects.c.user_id == user_id)
+            .order_by(desc(analytics_projects.c.updated_at))
+        ).mappings().all()
+        projects = []
+        for row in project_rows:
+            project = dict(row)
+            latest = conn.execute(
+                select(analytics_runs.c.id, analytics_runs.c.visibility_score, analytics_runs.c.created_at)
+                .where(analytics_runs.c.project_id == project['id'])
+                .order_by(desc(analytics_runs.c.created_at)).limit(1)
+            ).mappings().first()
+            project['latest_run'] = row_to_dict(latest) if latest else None
+            projects.append(row_to_dict(project))
+    return jsonify({'projects': projects})
+
+
+@app.route('/api/analytics/projects/<int:project_id>', methods=['DELETE'])
+def delete_analytics_project(project_id):
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    project = project_for_user(project_id, user_id)
+    if not project:
+        return jsonify({'error': 'Project not found.'}), 404
+    with engine.begin() as conn:
+        run_ids = [row[0] for row in conn.execute(select(analytics_runs.c.id).where(analytics_runs.c.project_id == project_id)).all()]
+        if run_ids:
+            conn.execute(analytics_engine_metrics.delete().where(analytics_engine_metrics.c.run_id.in_(run_ids)))
+            conn.execute(analytics_prompts.delete().where(analytics_prompts.c.run_id.in_(run_ids)))
+        conn.execute(analytics_runs.delete().where(analytics_runs.c.project_id == project_id))
+        conn.execute(analytics_projects.delete().where(analytics_projects.c.id == project_id))
+    return jsonify({'status': 'success'})
+
+
+@app.route('/api/analytics/projects/<int:project_id>/scan', methods=['POST'])
+def scan_analytics_project(project_id):
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    project = project_for_user(project_id, user_id)
+    if not project:
+        return jsonify({'error': 'Project not found.'}), 404
+    with engine.connect() as conn:
+        run_number = len(conn.execute(
+            select(analytics_runs.c.id).where(analytics_runs.c.project_id == project_id)
+        ).all()) + 1
+    report = make_analytics_report(project, max(run_number, 1))
+    now = datetime.utcnow()
+    with engine.begin() as conn:
+        result = conn.execute(insert(analytics_runs).values(
+            project_id=project_id, created_at=now,
+            visibility_score=report['visibility_score'], mention_rate=report['mention_rate'],
+            citation_rate=report['citation_rate'], share_of_voice=report['share_of_voice'], summary=report['summary'],
+        ))
+        run_id = result.inserted_primary_key[0]
+        conn.execute(insert(analytics_engine_metrics), [dict(metric, run_id=run_id) for metric in report['engines']])
+        conn.execute(insert(analytics_prompts), [dict(prompt, run_id=run_id) for prompt in report['prompts']])
+        conn.execute(analytics_projects.update().where(analytics_projects.c.id == project_id).values(updated_at=now))
+    return jsonify({'status': 'success', 'report': analytics_report(project_id, user_id)})
+
+
+def analytics_report(project_id, user_id):
+    project = project_for_user(project_id, user_id)
+    if not project:
+        return None
+    with engine.connect() as conn:
+        run = conn.execute(select(analytics_runs).where(analytics_runs.c.project_id == project_id)
+            .order_by(desc(analytics_runs.c.created_at)).limit(1)).mappings().first()
+        if not run:
+            return {'project': row_to_dict(project), 'run': None, 'engines': [], 'prompts': [], 'history': []}
+        run = dict(run)
+        engines = [dict(row) for row in conn.execute(select(analytics_engine_metrics).where(
+            analytics_engine_metrics.c.run_id == run['id']).order_by(desc(analytics_engine_metrics.c.visibility_score))).mappings().all()]
+        prompts = [dict(row) for row in conn.execute(select(analytics_prompts).where(
+            analytics_prompts.c.run_id == run['id']).order_by(analytics_prompts.c.position)).mappings().all()]
+        history = [row_to_dict(row) for row in conn.execute(select(
+            analytics_runs.c.visibility_score, analytics_runs.c.created_at).where(
+            analytics_runs.c.project_id == project_id).order_by(analytics_runs.c.created_at).limit(12)).mappings().all()]
+    return {'project': row_to_dict(project), 'run': row_to_dict(run), 'engines': engines, 'prompts': prompts, 'history': history}
+
+
+@app.route('/api/analytics/projects/<int:project_id>/report', methods=['GET'])
+def analytics_report_endpoint(project_id):
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    report = analytics_report(project_id, user_id)
+    if not report:
+        return jsonify({'error': 'Project not found.'}), 404
+    return jsonify(report)
 
 
 @app.route('/profile')

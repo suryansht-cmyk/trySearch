@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Search Analytics — trySearch</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/analytics.css" />
+  </head>
+  <body class="analytics-page">
+    <header class="site-header">
+      <div class="container header-inner">
+        <a href="/" class="brand" aria-label="trySearch home"><span class="brand-mark">t</span><span class="brand-name">trySearch</span></a>
+        <nav class="analytics-nav" aria-label="Dashboard"><a class="active" href="/analytics">AI Search Analytics</a><a href="/profile">Profile</a></nav>
+        <button class="button button-secondary analytics-logout" id="logout-button" type="button">Log out</button>
+      </div>
+    </header>
+
+    <main class="container analytics-shell">
+      <section class="analytics-topbar">
+        <div>
+          <p class="eyebrow">AI Search Analytics</p>
+          <h1>Know how AI answers talk about your brand.</h1>
+          <p>Track visibility across leading AI search experiences, uncover citation gaps, and turn the best opportunities into content actions.</p>
+        </div>
+        <button class="button button-primary" id="open-project-dialog" type="button">+ Add a website</button>
+      </section>
+
+      <p class="analytics-notice" id="analytics-notice" role="status" hidden></p>
+      <section id="loading-state" class="analytics-loading">Loading your analytics workspace…</section>
+
+      <section class="analytics-empty" id="empty-state" hidden>
+        <span class="empty-icon">✦</span>
+        <p class="eyebrow">Start with a website</p>
+        <h2>Build your first AI search baseline.</h2>
+        <p>Add a client website, then run a scan to generate a persistent visibility report, engine breakdown, and content opportunities.</p>
+        <button class="button button-primary" id="empty-add-project" type="button">Add a website</button>
+      </section>
+
+      <section id="analytics-dashboard" hidden>
+        <div class="project-bar">
+          <label class="project-picker-label" for="project-picker">Tracked website</label>
+          <select id="project-picker" aria-label="Tracked website"></select>
+          <span id="last-scan" class="last-scan"></span>
+          <button class="text-action" id="delete-project" type="button">Remove site</button>
+          <button class="button button-primary scan-button" id="scan-button" type="button">Run new scan</button>
+        </div>
+
+        <section class="analytics-empty report-empty" id="report-empty" hidden>
+          <span class="empty-icon">↗</span>
+          <h2>Your workspace is ready.</h2>
+          <p>Run the first scan to calculate an AI visibility baseline for this website.</p>
+          <button class="button button-primary" id="first-scan-button" type="button">Run first scan</button>
+        </section>
+
+        <div id="report-content" hidden>
+          <div class="report-heading">
+            <div><p class="section-label">Latest benchmark</p><h2 id="project-name"></h2></div>
+            <span class="baseline-badge">Baseline scan</span>
+          </div>
+
+          <section class="score-grid" aria-label="Key visibility metrics">
+            <article class="score-card main-score"><span>AI visibility score</span><strong id="visibility-score">—</strong><small>out of 100</small></article>
+            <article class="score-card"><span>Brand mention rate</span><strong id="mention-rate">—</strong><small>of monitored answers</small></article>
+            <article class="score-card"><span>Citation rate</span><strong id="citation-rate">—</strong><small>answers linking to you</small></article>
+            <article class="score-card"><span>Share of voice</span><strong id="share-of-voice">—</strong><small>vs. comparable brands</small></article>
+          </section>
+
+          <section class="summary-card"><span class="summary-icon">✦</span><div><p class="section-label">What to do next</p><p id="report-summary"></p></div></section>
+
+          <section class="report-grid">
+            <article class="analytics-card trend-card"><div class="card-title"><div><p class="section-label">Visibility trend</p><h3>Score history</h3></div><span id="trend-current"></span></div><div class="trend-chart" id="trend-chart" aria-label="AI visibility score history"></div></article>
+            <article class="analytics-card"><div class="card-title"><div><p class="section-label">Engine coverage</p><h3>Where you appear</h3></div></div><div class="engine-list" id="engine-list"></div></article>
+          </section>
+
+          <section class="analytics-card prompts-card"><div class="card-title"><div><p class="section-label">Prompt intelligence</p><h3>High-value answer opportunities</h3></div><span class="prompt-count" id="prompt-count"></span></div><div class="table-scroll"><table><thead><tr><th>Prompt</th><th>Intent</th><th>Position</th><th>Cited?</th><th>Leading brand</th><th>Recommended action</th></tr></thead><tbody id="prompt-list"></tbody></table></div></section>
+        </div>
+      </section>
+    </main>
+
+    <dialog class="project-dialog" id="project-dialog" aria-labelledby="dialog-title">
+      <form id="project-form">
+        <button class="dialog-close" id="close-project-dialog" type="button" aria-label="Close">×</button>
+        <p class="eyebrow">New tracked website</p><h2 id="dialog-title">Set up AI Search Analytics</h2>
+        <p class="dialog-copy">We’ll create a report workspace for this client website.</p>
+        <label>Website domain<input id="project-domain" name="domain" placeholder="example.com" autocomplete="url" required /></label>
+        <label>Brand name<input id="project-brand" name="brand_name" placeholder="Acme" required /></label>
+        <label>Industry<select id="project-industry" name="industry"><option>Technology</option><option>Marketing</option><option>E-commerce</option><option>Finance</option><option>Healthcare</option><option>General</option></select></label>
+        <p class="dialog-error" id="project-error" role="alert" hidden></p>
+        <button class="button button-primary" id="save-project" type="submit">Create workspace</button>
+      </form>
+    </dialog>
+    <script src="/analytics.js"></script>
+  </body>
+</html>
