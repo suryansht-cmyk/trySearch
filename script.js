@@ -109,6 +109,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const masterReadyTitle = document.querySelector('#master-ready-title');
     const masterReadyLinks = document.querySelector('#master-ready-links');
 
+    function resetMasterSetup() {
+      masterSetupForm.reset();
+      masterSetupForm.hidden = false;
+      masterReady.hidden = true;
+      masterReadyTitle.textContent = '';
+      masterReadyLinks.replaceChildren();
+      masterSetupNote.textContent = '';
+      masterSetupNote.className = 'form-note';
+    }
+
     function showMasterWorkspace(data) {
       if (!data || !data.workspace) return;
       masterSetupForm.hidden = true;
@@ -122,17 +132,6 @@ document.addEventListener('DOMContentLoaded', () => {
         masterReadyLinks.appendChild(link);
       });
       masterSetupNote.textContent = '';
-    }
-
-    async function loadMasterWorkspace() {
-      try {
-        const response = await fetch('/api/master-workspace');
-        if (!response.ok) return;
-        const data = await response.json();
-        if (data.workspace) showMasterWorkspace(data);
-      } catch (error) {
-        // The main page remains usable when the backend is unavailable.
-      }
     }
 
     masterSetupForm.addEventListener('submit', async (event) => {
@@ -166,7 +165,10 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
 
-    loadMasterWorkspace();
+    // Always start with a clear brief on reload. Existing workspace data remains
+    // safely stored in the backend and is only shown after a new submission.
+    resetMasterSetup();
+    window.addEventListener('pageshow', resetMasterSetup);
   }
 
   const homePage = document.querySelector('.home-page');
