@@ -22,3 +22,29 @@
 .project-dialog { width: min(94vw, 33rem); border: 1px solid var(--border); border-radius: 1.5rem; padding: 0; box-shadow: 0 25px 80px rgba(0,0,0,.25); }.project-dialog::backdrop { background: rgba(0,0,0,.32); backdrop-filter: blur(3px); }.project-dialog form { position: relative; padding: 2rem; }.project-dialog h2 { margin: 0; letter-spacing: -.04em; }.dialog-copy { color: var(--ink-muted); margin: .75rem 0 1.4rem; }.project-dialog label { display: grid; gap: .45rem; margin: .9rem 0; font-weight: 700; }.project-dialog input, .project-dialog select { border: 1px solid var(--border); border-radius: .8rem; padding: .8rem .9rem; background: var(--porcelain); color: var(--black); }.project-dialog .button { border: 0; cursor: pointer; margin-top: .75rem; }.dialog-close { position: absolute; top: 1rem; right: 1rem; border: 0; background: none; cursor: pointer; font-size: 1.6rem; }.dialog-error { color: #a33d1f; margin: .75rem 0 0; }
 @media (max-width: 800px) { .analytics-topbar { align-items: start; flex-direction: column; }.analytics-topbar .button { width: auto; }.score-grid, .report-grid { grid-template-columns: 1fr 1fr; }.main-score { grid-column: span 2; }.trend-card { grid-column: span 2; }.project-bar { flex-wrap: wrap; }.last-scan { width: 100%; order: 3; }.scan-button { margin-left: auto; } }
 @media (max-width: 560px) { .analytics-shell { padding-top: 2.25rem; }.analytics-nav { display: none; }.analytics-logout { display: none; }.analytics-topbar .button { width: 100%; }.score-grid, .report-grid { grid-template-columns: 1fr; }.main-score, .trend-card { grid-column: auto; }.project-bar { align-items: stretch; }.project-picker-label { width: 100%; }.project-bar #project-picker { max-width: none; width: 100%; }.text-action { order: 4; }.scan-button { margin-left: 0; width: 100%; order: 5; }.last-scan { order: 3; }.engine-row { grid-template-columns: 7.4rem 1fr auto; gap: .5rem; }.analytics-card, .score-card { border-radius: 1rem; }.project-dialog form { padding: 1.5rem; } }
+
+@media (hover: hover) and (pointer: fine) {
+  .analytics-shell .analytics-card,
+  .analytics-shell .score-card,
+  .analytics-shell .summary-card,
+  .analytics-shell .project-bar {
+    transform: perspective(1000px) translateZ(0);
+    transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
+  }
+
+  .analytics-shell .analytics-card:hover,
+  .analytics-shell .score-card:hover,
+  .analytics-shell .summary-card:hover,
+  .analytics-shell .project-bar:hover {
+    transform: perspective(1000px) translate3d(0, -4px, 12px) rotateX(0.8deg);
+    border-color: rgba(255, 127, 17, 0.48);
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .analytics-shell .analytics-card,
+  .analytics-shell .score-card,
+  .analytics-shell .summary-card,
+  .analytics-shell .project-bar { transition: none; }
+}

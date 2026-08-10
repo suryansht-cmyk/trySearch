@@ -231,6 +231,49 @@ visibility_mentions = Table(
     Column('action', Text, nullable=False),
 )
 
+# Content Studio documents keep the brief, generated starter draft, and the
+# user's edits together so content work survives page refreshes and sessions.
+content_documents = Table(
+    'content_documents',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('user_id', Integer, nullable=False, index=True),
+    Column('title', String(200), nullable=False),
+    Column('brand_name', String(150), nullable=False),
+    Column('keyword', String(200), nullable=False),
+    Column('content_type', String(80), nullable=False),
+    Column('tone', String(80), nullable=False),
+    Column('content', Text, nullable=False, default=''),
+    Column('seo_title', String(200), nullable=False, default=''),
+    Column('meta_description', String(320), nullable=False, default=''),
+    Column('outline', Text, nullable=False, default=''),
+    Column('recommendations', Text, nullable=False, default=''),
+    Column('status', String(40), nullable=False, default='Draft'),
+    Column('version', Integer, nullable=False, default=0),
+    Column('created_at', DateTime, nullable=False),
+    Column('updated_at', DateTime, nullable=False),
+)
+
+# One master workspace ties the four product modules together from a single
+# brand brief, preventing clients from having to repeat their onboarding data.
+master_workspaces = Table(
+    'master_workspaces',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('user_id', Integer, nullable=False, unique=True),
+    Column('brand_name', String(150), nullable=False),
+    Column('domain', String(255), nullable=False),
+    Column('industry', String(150), nullable=False),
+    Column('topic', String(200), nullable=False),
+    Column('goal', String(200), nullable=False),
+    Column('analytics_project_id', Integer, nullable=False),
+    Column('visibility_watchlist_id', Integer, nullable=False),
+    Column('prompt_collection_id', Integer, nullable=False),
+    Column('content_document_id', Integer, nullable=False),
+    Column('created_at', DateTime, nullable=False),
+    Column('updated_at', DateTime, nullable=False),
+)
+
 # Create tables if they don't exist
 metadata.create_all(engine)
 
@@ -1020,6 +1063,302 @@ def visibility_report_endpoint(watchlist_id):
     if not report:
         return jsonify({'error': 'Visibility watchlist not found.'}), 404
     return jsonify(report)
+
+
+def content_document_for_user(document_id, user_id):
+    with engine.connect() as conn:
+        row = conn.execute(select(content_documents).where(
+            (content_documents.c.id == document_id) & (content_documents.c.user_id == user_id)
+        )).mappings().first()
+    return dict(row) if row else None
+
+
+def make_content_draft(document):
+    """Create a structured, editable starter draft from the saved brief.
+
+    This provides an end-to-end studio experience without presenting a local
+    template as a live third-party model response. A provider-backed writer can
+    replace this function when the customer supplies credentials.
+    """
+    title = document['title']
+    brand = document['brand_name']
+    keyword = document['keyword']
+    content_type = document['content_type'].lower()
+    tone = document['tone'].lower()
+    seo_title = f"{title} | {brand}"[:200]
+    meta_description = f"Learn how {brand} approaches {keyword}, with practical guidance, decision criteria, and clear next steps."[:320]
+    outline = '\n'.join([
+        f'Introduction: why {keyword} matters now',
+        f'What to look for when evaluating {keyword}',
+        f'How {brand} helps teams succeed',
+        'Practical implementation steps',
+        'Frequently asked questions',
+        'Conclusion and next step',
+    ])
+    content = f"""# {title}
+
+## Start with the outcome
+
+Teams exploring **{keyword}** are usually looking for a clearer path from a business challenge to a measurable result. This {content_type} explains the choices that matter, the common trade-offs, and a practical way to move forward.
+
+## What good {keyword} looks like
+
+The strongest approach starts with a specific audience, a real workflow, and evidence that the solution can deliver. Avoid broad claims. Instead, define the problem, show the process, and connect each capability to an outcome the reader can recognise.
+
+### A useful evaluation checklist
+
+1. Identify the workflow that is creating the most friction.
+2. Agree on the result that would make the investment worthwhile.
+3. Compare options using proof, implementation effort, and long-term fit.
+4. Give stakeholders a simple next step to validate the decision.
+
+## How {brand} can help
+
+{brand} helps teams turn their priorities into a focused plan. Lead with the use case that matters to the reader, support it with first-party evidence, and make the next action easy to understand.
+
+## Put this into practice
+
+Choose one priority workflow, document its current state, and use the checklist above to shape the first improvement. A clear, {tone} explanation supported by examples will be more useful—and more citeable—than a generic overview.
+
+## Frequently asked questions
+
+### Who is this for?
+
+It is for teams evaluating {keyword} and looking for an outcome-focused starting point.
+
+### What should we do next?
+
+Start with the workflow where the gap is most visible, then validate your approach with stakeholders and real examples.
+"""
+    recommendations = '\n'.join([
+        'Add a first-party statistic, customer quote, or worked example before publishing.',
+        'Use the target keyword naturally in the introduction and one section heading.',
+        'Link to a relevant product, comparison, or conversion page with descriptive anchor text.',
+        'Review factual claims with a subject-matter expert before publishing.',
+    ])
+    return {'content': content, 'seo_title': seo_title, 'meta_description': meta_description,
+            'outline': outline, 'recommendations': recommendations}
+
+
+@app.route('/content-studio')
+def content_studio_page():
+    if not session.get('user_id'):
+        return redirect('/login')
+    return send_from_directory(BASE_DIR, 'content_studio.html')
+
+
+@app.route('/api/content-studio/documents', methods=['GET', 'POST'])
+def content_documents_endpoint():
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        title = (data.get('title') or '').strip()
+        brand_name = (data.get('brand_name') or '').strip()
+        keyword = (data.get('keyword') or '').strip()
+        content_type = (data.get('content_type') or 'Blog post').strip()
+        tone = (data.get('tone') or 'Expert').strip()
+        allowed_types = {'Blog post', 'Landing page', 'Comparison page', 'Product page', 'Email'}
+        allowed_tones = {'Expert', 'Conversational', 'Confident', 'Educational'}
+        if not title or not brand_name or not keyword:
+            return jsonify({'error': 'Enter a title, brand name, and target topic or keyword.'}), 400
+        if content_type not in allowed_types or tone not in allowed_tones:
+            return jsonify({'error': 'Choose a valid content type and tone.'}), 400
+        now = datetime.utcnow()
+        with engine.begin() as conn:
+            result = conn.execute(insert(content_documents).values(
+                user_id=user_id, title=title[:200], brand_name=brand_name[:150], keyword=keyword[:200],
+                content_type=content_type, tone=tone, content='', seo_title='', meta_description='',
+                outline='', recommendations='', status='Brief', version=0, created_at=now, updated_at=now,
+            ))
+            document_id = result.inserted_primary_key[0]
+        return jsonify({'status': 'success', 'document': row_to_dict(content_document_for_user(document_id, user_id))}), 201
+    with engine.connect() as conn:
+        documents = [row_to_dict(row) for row in conn.execute(select(content_documents).where(
+            content_documents.c.user_id == user_id
+        ).order_by(desc(content_documents.c.updated_at))).mappings().all()]
+    return jsonify({'documents': documents})
+
+
+@app.route('/api/content-studio/documents/<int:document_id>', methods=['GET', 'PATCH', 'DELETE'])
+def content_document_endpoint(document_id):
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    document = content_document_for_user(document_id, user_id)
+    if not document:
+        return jsonify({'error': 'Content document not found.'}), 404
+    if request.method == 'GET':
+        return jsonify({'document': row_to_dict(document)})
+    if request.method == 'DELETE':
+        with engine.begin() as conn:
+            conn.execute(content_documents.delete().where(content_documents.c.id == document_id))
+        return jsonify({'status': 'success'})
+
+    data = request.get_json(silent=True) or {}
+    updates = {}
+    text_limits = {'title': 200, 'content': 30000, 'seo_title': 200, 'meta_description': 320}
+    for key, limit in text_limits.items():
+        if key in data and isinstance(data[key], str):
+            value = data[key].strip() if key != 'content' else data[key]
+            if not value and key == 'title':
+                return jsonify({'error': 'A document title is required.'}), 400
+            if len(value) > limit:
+                return jsonify({'error': f'{key.replace("_", " ").title()} is too long.'}), 400
+            updates[key] = value
+    if data.get('status') in {'Brief', 'Draft', 'Ready for review', 'Published'}:
+        updates['status'] = data['status']
+    if not updates:
+        return jsonify({'error': 'No valid document changes were provided.'}), 400
+    updates['updated_at'] = datetime.utcnow()
+    updates['version'] = document['version'] + 1
+    with engine.begin() as conn:
+        conn.execute(content_documents.update().where(content_documents.c.id == document_id).values(**updates))
+    return jsonify({'status': 'success', 'document': row_to_dict(content_document_for_user(document_id, user_id))})
+
+
+@app.route('/api/content-studio/documents/<int:document_id>/generate', methods=['POST'])
+def generate_content_document(document_id):
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    document = content_document_for_user(document_id, user_id)
+    if not document:
+        return jsonify({'error': 'Content document not found.'}), 404
+    draft = make_content_draft(document)
+    with engine.begin() as conn:
+        conn.execute(content_documents.update().where(content_documents.c.id == document_id).values(
+            **draft, status='Draft', version=document['version'] + 1, updated_at=datetime.utcnow()
+        ))
+    return jsonify({'status': 'success', 'document': row_to_dict(content_document_for_user(document_id, user_id))})
+
+
+def master_workspace_for_user(user_id):
+    with engine.connect() as conn:
+        row = conn.execute(select(master_workspaces).where(
+            master_workspaces.c.user_id == user_id
+        )).mappings().first()
+    return dict(row) if row else None
+
+
+def master_workspace_response(workspace, status='ready'):
+    return {
+        'status': status,
+        'workspace': row_to_dict(workspace),
+        'tools': [
+            {'name': 'AI Search Analytics', 'href': '/analytics'},
+            {'name': 'AI Visibility Tracking', 'href': '/visibility-tracking'},
+            {'name': 'Prompt Intelligence', 'href': '/prompt-intelligence'},
+            {'name': 'Content Studio', 'href': '/content-studio'},
+        ],
+    }
+
+
+@app.route('/api/master-workspace', methods=['GET', 'POST'])
+def master_workspace_endpoint():
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    existing = master_workspace_for_user(user_id)
+    if request.method == 'GET':
+        return jsonify(master_workspace_response(existing, 'existing') if existing else {'workspace': None})
+    if existing:
+        return jsonify(master_workspace_response(existing, 'existing'))
+
+    data = request.get_json(silent=True) or {}
+    brand_name = (data.get('brand_name') or '').strip()
+    domain = normalise_domain(data.get('domain'))
+    industry = (data.get('industry') or '').strip()
+    topic = (data.get('topic') or '').strip()
+    goal = (data.get('goal') or '').strip()
+    if not brand_name or not domain or not industry or not topic or not goal:
+        return jsonify({'error': 'Enter your brand, a valid website, industry, topic, and primary goal.'}), 400
+
+    now = datetime.utcnow()
+    with engine.begin() as conn:
+        # AI Search Analytics: project and its initial benchmark report.
+        project_result = conn.execute(insert(analytics_projects).values(
+            user_id=user_id, domain=domain, brand_name=brand_name[:150], industry=industry[:150],
+            created_at=now, updated_at=now,
+        ))
+        project_id = project_result.inserted_primary_key[0]
+        project = {'id': project_id, 'domain': domain, 'brand_name': brand_name[:150], 'industry': industry[:150]}
+        analytics_report_data = make_analytics_report(project, 1)
+        analytics_run_result = conn.execute(insert(analytics_runs).values(
+            project_id=project_id, created_at=now, visibility_score=analytics_report_data['visibility_score'],
+            mention_rate=analytics_report_data['mention_rate'], citation_rate=analytics_report_data['citation_rate'],
+            share_of_voice=analytics_report_data['share_of_voice'], summary=analytics_report_data['summary'],
+        ))
+        analytics_run_id = analytics_run_result.inserted_primary_key[0]
+        conn.execute(insert(analytics_engine_metrics), [dict(metric, run_id=analytics_run_id) for metric in analytics_report_data['engines']])
+        conn.execute(insert(analytics_prompts), [dict(prompt, run_id=analytics_run_id) for prompt in analytics_report_data['prompts']])
+
+        # Visibility Tracking: dedicated watchlist and its first scan.
+        watchlist_result = conn.execute(insert(visibility_watchlists).values(
+            user_id=user_id, name=f'{brand_name} visibility', brand_name=brand_name[:150], website=domain,
+            topic=topic[:150], created_at=now, updated_at=now,
+        ))
+        watchlist_id = watchlist_result.inserted_primary_key[0]
+        watchlist = {'id': watchlist_id, 'brand_name': brand_name[:150], 'topic': topic[:150]}
+        visibility_report_data = make_visibility_report(watchlist, 1)
+        scan_result = conn.execute(insert(visibility_scans).values(
+            watchlist_id=watchlist_id, created_at=now, visibility_score=visibility_report_data['visibility_score'],
+            mentions_found=visibility_report_data['mentions_found'], citations_found=visibility_report_data['citations_found'],
+            competitor_mentions=visibility_report_data['competitor_mentions'], summary=visibility_report_data['summary'],
+        ))
+        scan_id = scan_result.inserted_primary_key[0]
+        conn.execute(insert(visibility_engine_results), [dict(item, scan_id=scan_id) for item in visibility_report_data['engines']])
+        conn.execute(insert(visibility_mentions), [dict(item, scan_id=scan_id) for item in visibility_report_data['mentions']])
+
+        # Prompt Intelligence: collection plus three analysed starting prompts.
+        collection_result = conn.execute(insert(prompt_collections).values(
+            user_id=user_id, name=f'{brand_name} prompt opportunities', brand_name=brand_name[:150], website=domain,
+            created_at=now, updated_at=now,
+        ))
+        collection_id = collection_result.inserted_primary_key[0]
+        starter_prompts = [
+            (f'What are the best {topic} solutions?', 'ChatGPT', 'Commercial'),
+            (f'How does {brand_name} compare for {topic}?', 'Perplexity', 'Comparison'),
+            (f'How do teams achieve {goal.lower()} with {topic}?', 'Claude', 'Informational'),
+        ]
+        for prompt_text, prompt_engine, prompt_intent in starter_prompts:
+            query_result = conn.execute(insert(prompt_queries).values(
+                collection_id=collection_id, prompt=prompt_text, engine=prompt_engine, intent=prompt_intent,
+                created_at=now, updated_at=now,
+            ))
+            query_id = query_result.inserted_primary_key[0]
+            query = {'id': query_id, 'prompt': prompt_text, 'engine': prompt_engine, 'intent': prompt_intent}
+            prompt_result_data = make_prompt_result(query, brand_name[:150], 1)
+            conn.execute(insert(prompt_query_results).values(
+                query_id=query_id, created_at=now, **prompt_result_data
+            ))
+
+        # Content Studio: a generated, editable initial draft connected to the same topic.
+        content_title = f'How to achieve {goal} with {topic}'[:200]
+        content_result = conn.execute(insert(content_documents).values(
+            user_id=user_id, title=content_title, brand_name=brand_name[:150], keyword=topic[:200],
+            content_type='Blog post', tone='Expert', content='', seo_title='', meta_description='', outline='',
+            recommendations='', status='Brief', version=0, created_at=now, updated_at=now,
+        ))
+        content_document_id = content_result.inserted_primary_key[0]
+        document = {'id': content_document_id, 'title': content_title, 'brand_name': brand_name[:150],
+                    'keyword': topic[:200], 'content_type': 'Blog post', 'tone': 'Expert'}
+        content_draft = make_content_draft(document)
+        conn.execute(content_documents.update().where(content_documents.c.id == content_document_id).values(
+            **content_draft, status='Draft', version=1, updated_at=now
+        ))
+
+        workspace_result = conn.execute(insert(master_workspaces).values(
+            user_id=user_id, brand_name=brand_name[:150], domain=domain, industry=industry[:150], topic=topic[:200],
+            goal=goal[:200], analytics_project_id=project_id, visibility_watchlist_id=watchlist_id,
+            prompt_collection_id=collection_id, content_document_id=content_document_id,
+            created_at=now, updated_at=now,
+        ))
+        workspace_id = workspace_result.inserted_primary_key[0]
+
+    workspace = master_workspace_for_user(user_id)
+    return jsonify(master_workspace_response(workspace or {'id': workspace_id}, 'ready')), 201
 
 
 @app.route('/profile')

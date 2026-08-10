@@ -6,7 +6,13 @@
     <title>trySearch — AI Search Visibility & Analytics Platform</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
-  <body>
+  <body class="home-page">
+    <div class="ambient-scene" aria-hidden="true">
+      <span class="ambient-orb ambient-orb-one"></span>
+      <span class="ambient-orb ambient-orb-two"></span>
+      <span class="ambient-orb ambient-orb-three"></span>
+      <span class="ambient-grid"></span>
+    </div>
     <header class="site-header"> 
       <div class="container header-inner">
         <a href="/" class="brand">
@@ -31,10 +37,9 @@
       <div class="mobile-nav" id="mobile-nav" aria-hidden="true">
         <a href="/analytics">AI Search Analytics</a>
         <a href="/visibility-tracking">Visibility Tracking</a>
+        <a href="/content-studio">Content Studio</a>
         <a href="/prompt-intelligence">Prompt Intelligence</a>
         <a href="#product">Product</a>
-        <a href="#resources">Resources</a>
-        <a href="#pricing">Pricing</a>
         <a href="#contact">Contact</a>
         <a href="/login" class="button button-primary mobile-cta" id="mobile-auth-link">Start for free</a>
       </div>
@@ -135,10 +140,38 @@
         <article class="feature-card">
           <h2>Content Studio</h2>
           <p style="padding-bottom: 10px;">Create AI-optimized landing pages, blog posts, and product descriptions engineered for citation and discoverability.</p>
-          <a href="/analytics" class="main-mvp">
+          <a href="/content-studio" class="main-mvp">
             -> try for free
           </a>
         </article>
+      </section>
+
+      <section class="section container master-setup" id="master-workspace">
+        <div class="master-setup-copy">
+          <p class="eyebrow">One-time AI growth setup</p>
+          <h2>Set up every AI growth workspace from one brand brief.</h2>
+          <p>Share the essentials once. trySearch will create an initial Analytics benchmark, Visibility watchlist, Prompt Intelligence collection, and an editable Content Studio draft for you.</p>
+          <div class="master-tool-list" aria-label="Workspaces included"><span>AI Search Analytics</span><span>Visibility Tracking</span><span>Prompt Intelligence</span><span>Content Studio</span></div>
+        </div>
+        <div class="master-setup-panel">
+          <form id="master-setup-form" class="master-setup-form">
+            <label>Brand name<input name="brand_name" placeholder="Acme" required /></label>
+            <label>Website<input name="domain" placeholder="acme.com" required /></label>
+            <label>Industry<input name="industry" placeholder="B2B software" required /></label>
+            <label>Core topic<input name="topic" placeholder="Project management software" required /></label>
+            <label>Primary goal<input name="goal" placeholder="Grow qualified demos" required /></label>
+            <button class="button button-primary" id="master-setup-button" type="submit">Set up my AI workspace</button>
+            <p class="master-form-note">Your information is used to personalise each workspace. You can refine the individual tools afterwards.</p>
+          </form>
+          <div class="master-ready" id="master-ready" hidden>
+            <span class="empty-icon">✓</span>
+            <p class="eyebrow">Your workspace is ready</p>
+            <h3 id="master-ready-title"></h3>
+            <p>Each product workspace now has a starting point built from your brand brief.</p>
+            <div class="master-ready-links" id="master-ready-links"></div>
+          </div>
+          <p class="form-note" id="master-setup-note" role="status"></p>
+        </div>
       </section>
 
       <section class="section container section-highlight">
@@ -228,41 +261,31 @@
 
     <footer class="site-footer">
       <div class="container footer-grid">
-        <div>
+        <div class="footer-brand-block">
           <a href="/" class="brand-footer">
-            <span class="brand-mark">t</span> &nbsp;
+            <span class="brand-mark">t</span>
             <span class="brand-name">trySearch</span>
           </a>
-          <p>trySearch is an AI search optimization platform that helps brands track visibility and analytics across AI engines like ChatGPT and Claude.</p>
+          <p>One workspace for improving how your brand is discovered, cited, and chosen in AI search.</p>
+          <a class="footer-cta" href="#master-workspace">Set up your AI workspace <span aria-hidden="true">→</span></a>
         </div>
-        <div>
+        <nav class="footer-nav" aria-label="Product links">
           <h3>Product</h3>
           <a href="/analytics">AI Search Analytics</a>
           <a href="/visibility-tracking">AI Visibility Tracking</a>
           <a href="/prompt-intelligence">Prompt Intelligence</a>
-          <a href="#product">AEO Insights</a>
-          <a href="#product">LLM Analytics</a>
-          <a href="#product">Content Studio</a>
-          <a href="#product">Technical Optimisation</a>
-        </div>
-        <div>
-          <h3>Resources</h3>
-          <a href="#resources">AI Search Data</a>
-          <a href="#resources">Documentation</a>
-          <a href="#resources">Events</a>
-          <a href="#resources">Free Tools</a>
-        </div>
-        <div>
-          <h3>Company</h3>
-          <a href="#">About</a>
-          <a href="#">Careers</a>
-          <a href="#">Contact</a>
-          <a href="#">Privacy Policy</a>
-        </div>
+          <a href="/content-studio">Content Studio</a>
+        </nav>
+        <nav class="footer-nav" aria-label="Company links">
+          <h3>Get started</h3>
+          <a href="#master-workspace">Master workspace</a>
+          <a href="#contact">Contact</a>
+          <a href="/login">Log in</a>
+        </nav>
       </div>
       <div class="footer-bottom">
         <span>© 2026 trySearch Limited. All rights reserved.</span>
-        <span>B1, 9 Tanner St, London SE1 3LE</span>
+        <span>Built for AI search growth.</span>
       </div>
     </footer>
 
