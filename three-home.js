@@ -25,36 +25,8 @@ if (canvas && !reducedMotion) {
       const field = new THREE.Group();
       scene.add(field);
 
-      const pointCount = window.matchMedia('(max-width: 720px)').matches ? 105 : 260;
-      const positions = new Float32Array(pointCount * 3);
-      const colors = new Float32Array(pointCount * 3);
       const colorWarm = new THREE.Color(0xff7f11);
       const colorLight = new THREE.Color(0xe3d9c8);
-
-      for (let index = 0; index < pointCount; index += 1) {
-        const offset = index * 3;
-        const spread = Math.random() < 0.55 ? 8.5 : 13;
-        positions[offset] = (Math.random() - 0.5) * spread * 1.25;
-        positions[offset + 1] = (Math.random() - 0.5) * 21;
-        positions[offset + 2] = (Math.random() - 0.55) * 8 - 1;
-        const color = Math.random() < 0.36 ? colorWarm : colorLight;
-        colors[offset] = color.r;
-        colors[offset + 1] = color.g;
-        colors[offset + 2] = color.b;
-      }
-
-      const particlesGeometry = new THREE.BufferGeometry();
-      particlesGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-      particlesGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-      const particles = new THREE.Points(particlesGeometry, new THREE.PointsMaterial({
-        size: 0.065,
-        vertexColors: true,
-        transparent: true,
-        opacity: 0.72,
-        depthWrite: false,
-        sizeAttenuation: true
-      }));
-      field.add(particles);
 
       const lineVertices = [];
       const lineColors = [];
@@ -115,7 +87,6 @@ if (canvas && !reducedMotion) {
         field.rotation.x = pointer.y * 0.075;
         field.rotation.z = scrollY * 0.00007;
         field.position.y = Math.sin(elapsed * 0.34) * 0.28 - (scrollY % 800) * 0.00022;
-        particles.rotation.z = elapsed * 0.018;
         halo.rotation.z = elapsed * 0.19;
         renderer.render(scene, camera);
         animationFrame = requestAnimationFrame(render);
