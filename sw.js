@@ -1,4 +1,4 @@
-const CACHE_NAME = 'trysearch-shell-v2';
+const CACHE_NAME = 'trysearch-shell-v7';
 const APP_SHELL = [
   '/',
   '/offline.html',
@@ -12,6 +12,7 @@ const APP_SHELL = [
   '/prompt_intelligence.js',
   '/visibility_tracking.js',
   '/content_studio.js',
+  '/three-home.js',
   '/pwa.js',
   '/manifest.webmanifest',
   '/pwa-icon.svg',

@@ -1,4 +1,9 @@
 document.addEventListener('DOMContentLoaded', () => {
+  // A device can preserve a horizontal scroll position after viewport emulation
+  // changes. The homepage is intentionally single-column on phones, so always
+  // start from the true left edge.
+  if (window.scrollX) window.scrollTo({ left: 0, top: window.scrollY });
+
   const toggleButton = document.querySelector('.mobile-menu-toggle');
   const mobileNav = document.querySelector('.mobile-nav');
   const contactForm = document.querySelector('#contact-form');
@@ -221,6 +226,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const scene = document.querySelector('.ambient-scene');
     const heroVisual = document.querySelector('.hero-visual');
+    const heroHologram = document.querySelector('.hero-hologram');
     let pendingFrame = false;
     const updateParallax = () => {
       const y = Math.min(window.scrollY, 1200);
@@ -239,6 +245,20 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     updateParallax();
     window.addEventListener('scroll', requestParallax, { passive: true });
+
+    if (heroVisual && heroHologram && window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+      heroVisual.addEventListener('pointermove', (event) => {
+        const bounds = heroVisual.getBoundingClientRect();
+        const x = (event.clientX - bounds.left) / bounds.width - 0.5;
+        const y = (event.clientY - bounds.top) / bounds.height - 0.5;
+        heroHologram.style.setProperty('--hologram-x', `${(y * 7).toFixed(2)}deg`);
+        heroHologram.style.setProperty('--hologram-y', `${(x * 8).toFixed(2)}deg`);
+      });
+      heroVisual.addEventListener('pointerleave', () => {
+        heroHologram.style.setProperty('--hologram-x', '0deg');
+        heroHologram.style.setProperty('--hologram-y', '0deg');
+      });
+    }
   }
 
   const visibilityChart = document.querySelector('[data-visibility-chart]');

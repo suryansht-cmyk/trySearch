@@ -67,4 +67,32 @@
   .summary-card { align-items: flex-start; padding: 1rem; }
   .analytics-empty { padding: 1.75rem 1rem; border-radius: 1.1rem; }
   .engine-row { grid-template-columns: minmax(5.75rem, 1fr) 1fr auto; font-size: .82rem; }
+  .trend-chart { height: 11rem; gap: .35rem; }
+  .trend-bar { min-width: .8rem; }
+  .trend-bar span { font-size: .62rem; }
+}
+
+/* Long workspace names and report actions should reflow before they can push
+   dashboard cards past a narrow viewport. */
+.analytics-card,
+.summary-card,
+.project-bar,
+.card-title > * { min-width: 0; }
+
+.summary-card p,
+.card-title h3 { overflow-wrap: anywhere; }
+
+.project-dialog { max-height: calc(100dvh - 1rem); overflow-y: auto; }
+
+@media (max-width: 560px) {
+  .card-title { flex-wrap: wrap; }
+  .card-title > .prompt-count,
+  .card-title > a.prompt-count { max-width: 100%; }
+  .summary-card { align-items: flex-start; }
+}
+
+@media (pointer: coarse) {
+  .text-action,
+  .scan-button,
+  .analytics-logout { min-height: 2.75rem; }
 }

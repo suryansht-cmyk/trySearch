@@ -3,3 +3,13 @@
 @media (max-width: 560px) { .mention-heading { align-items: start; flex-direction: column; }.mention-heading select { width: 100%; }.mention-item { grid-template-columns: 1fr; }.mention-action { grid-column: auto; }.visibility-watchlist-bar { margin-bottom: 1rem; } }
 
 @media (max-width: 420px) { .mention-item { padding: .85rem; }.mention-engine span { white-space: normal; }.watchlist-subtitle { font-size: .9rem; } }
+
+.mention-item,
+.mention-item > * { min-width: 0; }
+
+.mention-query,
+.mention-action { overflow-wrap: anywhere; }
+
+@media (pointer: coarse) {
+  .mention-heading select { min-height: 2.75rem; }
+}

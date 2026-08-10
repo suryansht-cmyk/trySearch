@@ -13,6 +13,7 @@
   </head>
   <body class="home-page">
     <div class="ambient-scene" aria-hidden="true">
+      <canvas id="three-home-canvas" class="three-home-canvas"></canvas>
       <span class="ambient-orb ambient-orb-one"></span>
       <span class="ambient-orb ambient-orb-two"></span>
       <span class="ambient-orb ambient-orb-three"></span>
@@ -55,13 +56,25 @@
         <div class="hero-content">
           <p class="eyebrow">AI Search Optimization for modern brands</p>
           <h1>Visibility & Analytics from AI search — and the actions to drive growth</h1>
-          
           <div class="hero-actions">
             <a href="/analytics" class="button button-primary">Start for free</a>
             <a href="#contact" class="button button-secondary">Book a demo</a>
           </div>
         </div>
         <div class="hero-visual">
+          <div class="hero-hologram" aria-hidden="true">
+            <span class="hologram-glow"></span>
+            <span class="hologram-core"><i></i><b>AI</b></span>
+            <span class="hologram-orbit orbit-primary"><i></i></span>
+            <span class="hologram-orbit orbit-secondary"><i></i></span>
+            <span class="hologram-orbit orbit-tertiary"><i></i></span>
+            <span class="hologram-particle particle-one"></span>
+            <span class="hologram-particle particle-two"></span>
+            <span class="hologram-particle particle-three"></span>
+            <span class="hologram-data data-one">92<span>%</span></span>
+            <span class="hologram-data data-two">LIVE</span>
+            <span class="hologram-data data-three">+18</span>
+          </div>
           <div class="card visual-card">
             <div class="card-header">
               <div class="indicator"></div>
@@ -113,7 +126,7 @@
             </div>
           </div>
         </div>
-      </section><br><br>
+      </section><br><br><br>
 
       <section id="product" class="section container feature-grid">
         <article class="feature-card">
@@ -177,7 +190,6 @@
         <div class="highlight-copy">
           <p class="eyebrow">See where you appear in AI search results</p>
           <h2>Track your brand mentions and citations across ChatGPT, Claude, Perplexity, Google AI Overviews, and Microsoft Copilot.</h2>
-          <br>
         </div>
         <div class="highlight-visual">
           <div class="insights-panel">
@@ -193,7 +205,7 @@
             </div>
           </div>
         </div>
-      </section><br><br>
+      </section>
 
       <section class="section container why-choose">
         <div class="section-heading">
@@ -218,12 +230,12 @@
             <p>Marketers, agencies, and brands rely on trySearch to improve visibility, capture AI-driven traffic, and grow pipeline.</p>
           </article>
         </div>
-      </section> <br><br><br>
+      </section>
 
       <section class="section container contact-section" id="contact">
         <div class="section-heading">
           <p class="eyebrow">Start the conversation</p>
-          <h2>Send us a quick message</h2><br>
+          <h2>Send us a quick message</h2>
         </div>
         <div class="contact-panel">
           <div class="contact-copy">
@@ -255,7 +267,7 @@
           </form>
         </div>
       </section>
-    </main><br><br><br>
+    </main>
 
     <footer class="site-footer">
       <div class="container footer-grid">
@@ -288,6 +300,7 @@
     </footer>
 
     <script src="/pwa.js"></script>
+    <script type="module" src="/three-home.js"></script>
     <script src="script.js"></script>
     <script>
       // Update header auth link based on session
