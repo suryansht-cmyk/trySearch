@@ -1,4 +1,4 @@
-const CACHE_NAME = 'trysearch-shell-v11';
+const CACHE_NAME = 'trysearch-shell-v12';
 const APP_SHELL = [
   '/',
   '/offline.html',
