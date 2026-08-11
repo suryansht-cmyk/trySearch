@@ -99,6 +99,7 @@ analytics_projects = Table(
     Column('id', Integer, primary_key=True),
     Column('user_id', Integer, nullable=False, index=True),
     Column('domain', String(255), nullable=False),
+    Column('website_url', String(2048), nullable=True),
     Column('brand_name', String(150), nullable=False),
     Column('industry', String(150), nullable=False, default='General'),
     Column('created_at', DateTime, nullable=False),
@@ -282,6 +283,18 @@ master_workspaces = Table(
 
 # Create tables if they don't exist
 metadata.create_all(engine)
+
+
+def ensure_database_column(table_name, column_name, column_type):
+    """Apply the one additive migration required by older deployed databases."""
+    from sqlalchemy import inspect
+    existing_columns = {column['name'] for column in inspect(engine).get_columns(table_name)}
+    if column_name not in existing_columns:
+        with engine.begin() as conn:
+            conn.execute(text(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}'))
+
+
+ensure_database_column('analytics_projects', 'website_url', 'VARCHAR(2048)')
 
 
 def get_database_identity():
@@ -496,6 +509,18 @@ def normalise_domain(value):
     return domain.removeprefix('www.')
 
 
+def normalise_website_url(value):
+    """Retain an optional public path instead of silently reducing it to a host."""
+    value = (value or '').strip()
+    if not value:
+        return None
+    parsed = urlparse(value if '://' in value else f'https://{value}')
+    if parsed.scheme not in {'http', 'https'} or not parsed.netloc or any(char.isspace() for char in parsed.netloc):
+        return None
+    path = parsed.path or '/'
+    return parsed._replace(path=path, params='', fragment='').geturl()
+
+
 class WebsiteAuditParser(HTMLParser):
     """Small dependency-free HTML extractor for factual, on-page audit signals."""
 
@@ -592,13 +617,13 @@ def validate_public_web_url(url):
     return parsed
 
 
-def fetch_website_snapshot(domain):
+def fetch_website_snapshot(website_url):
     """Fetch a public page and return transparent, first-party page evidence.
 
     These facts are intentionally limited to what the site itself exposes. They
     are not presented as a measurement of third-party AI model results.
     """
-    start_url = f'https://{domain}/'
+    start_url = website_url if website_url.startswith(('http://', 'https://')) else f'https://{website_url}/'
     try:
         validate_public_web_url(start_url)
         request = Request(start_url, headers={
@@ -637,7 +662,7 @@ def fetch_website_snapshot(domain):
 
 def make_analytics_report(project, run_number):
     """Build a report from the live, publicly accessible website—not mock data."""
-    snapshot = fetch_website_snapshot(project['domain'])
+    snapshot = fetch_website_snapshot(project.get('website_url') or project['domain'])
     if not snapshot['fetched']:
         message = f"Live audit unavailable: {snapshot['error']}"
         return {
@@ -714,7 +739,9 @@ def analytics_projects_endpoint():
 
     if request.method == 'POST':
         data = request.get_json(silent=True) or {}
-        domain = normalise_domain(data.get('domain'))
+        raw_website = data.get('domain')
+        domain = normalise_domain(raw_website)
+        website_url = normalise_website_url(raw_website)
         brand_name = (data.get('brand_name') or '').strip()
         industry = (data.get('industry') or 'General').strip()[:150]
         if not domain or not brand_name:
@@ -722,7 +749,7 @@ def analytics_projects_endpoint():
         now = datetime.utcnow()
         with engine.begin() as conn:
             result = conn.execute(insert(analytics_projects).values(
-                user_id=user_id, domain=domain, brand_name=brand_name[:150], industry=industry or 'General',
+                user_id=user_id, domain=domain, website_url=website_url, brand_name=brand_name[:150], industry=industry or 'General',
                 created_at=now, updated_at=now,
             ))
             project_id = result.inserted_primary_key[0]

@@ -42,22 +42,29 @@
       </section>
 
       <section id="analytics-dashboard" hidden>
-        <div class="project-bar">
-          <label class="project-picker-label" for="project-picker">Tracked website</label>
-          <select id="project-picker" aria-label="Tracked website"></select>
-          <span id="last-scan" class="last-scan"></span>
-          <button class="text-action" id="delete-project" type="button">Remove site</button>
-          <button class="button button-primary scan-button" id="scan-button" type="button">Run live audit</button>
-        </div>
+        <div class="analytics-workbench">
+          <aside class="analytics-sidepanel" aria-label="Tracked website workspaces">
+            <div class="sidepanel-heading"><div><p class="section-label">Workspaces</p><h2>Tracked sites</h2></div><button class="sidebar-add" id="sidebar-add-project" type="button" aria-label="Add a website">+</button></div>
+            <div class="sidebar-project-list" id="sidebar-project-list"></div>
+            <div class="sidepanel-note"><strong>Live evidence only</strong><span>Scores come from the saved URL’s public HTML—not simulated AI answers.</span></div>
+          </aside>
+          <div class="analytics-core">
+            <div class="project-bar">
+              <label class="project-picker-label" for="project-picker">Tracked website</label>
+              <select id="project-picker" aria-label="Tracked website"></select>
+              <span id="last-scan" class="last-scan"></span>
+              <button class="text-action" id="delete-project" type="button">Remove site</button>
+              <button class="button button-primary scan-button" id="scan-button" type="button">Run live audit</button>
+            </div>
 
-        <section class="analytics-empty report-empty" id="report-empty" hidden>
+            <section class="analytics-empty report-empty" id="report-empty" hidden>
           <span class="empty-icon">↗</span>
           <h2>Your workspace is ready.</h2>
           <p>Run the first live audit to calculate website-derived AI-search readiness signals.</p>
           <button class="button button-primary" id="first-scan-button" type="button">Run live audit</button>
-        </section>
+            </section>
 
-        <div id="report-content" hidden>
+            <div id="report-content" hidden>
           <div class="report-heading">
             <div><p class="section-label">Latest live website audit</p><h2 id="project-name"></h2></div>
             <span class="baseline-badge">Source-derived</span>
@@ -78,6 +85,8 @@
           </section>
 
           <section class="analytics-card prompts-card"><div class="card-title"><div><p class="section-label">Website improvements</p><h3>Evidence-backed next actions</h3></div><span class="prompt-count" id="prompt-count"></span></div><div class="table-scroll"><table><thead><tr><th>Website signal</th><th>Area</th><th>Score</th><th>Status</th><th>Evidence</th><th>Recommended action</th></tr></thead><tbody id="prompt-list"></tbody></table></div></section>
+            </div>
+          </div>
         </div>
       </section>
     </main>
@@ -86,8 +95,8 @@
       <form id="project-form">
         <button class="dialog-close" id="close-project-dialog" type="button" aria-label="Close">×</button>
         <p class="eyebrow">New tracked website</p><h2 id="dialog-title">Set up AI Search Analytics</h2>
-        <p class="dialog-copy">We’ll create a report workspace for this client website.</p>
-        <label>Website domain<input id="project-domain" name="domain" placeholder="example.com" autocomplete="url" required /></label>
+        <p class="dialog-copy">Add the public page you want to audit. You can use a full URL, including a specific page path.</p>
+        <label>Website URL<input id="project-domain" name="domain" placeholder="https://example.com/page" autocomplete="url" required /></label>
         <label>Brand name<input id="project-brand" name="brand_name" placeholder="Example" required /></label>
         <label>Industry<select id="project-industry" name="industry"><option>Technology</option><option>Marketing</option><option>E-commerce</option><option>Finance</option><option>Healthcare</option><option>General</option></select></label>
         <p class="dialog-error" id="project-error" role="alert" hidden></p>

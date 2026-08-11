@@ -5,7 +5,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loading: $('#loading-state'), empty: $('#empty-state'), dashboard: $('#analytics-dashboard'),
     picker: $('#project-picker'), dialog: $('#project-dialog'), form: $('#project-form'),
     notice: $('#analytics-notice'), scan: $('#scan-button'), firstScan: $('#first-scan-button'),
-    reportEmpty: $('#report-empty'), report: $('#report-content'), lastScan: $('#last-scan'),
+    reportEmpty: $('#report-empty'), report: $('#report-content'), lastScan: $('#last-scan'), projectList: $('#sidebar-project-list'),
   };
 
   async function request(url, options) {
@@ -19,6 +19,14 @@ document.addEventListener('DOMContentLoaded', () => {
   function formatDate(value) { return value ? new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Not audited yet'; }
   function setScanBusy(busy) { elements.scan.disabled = busy; elements.scan.textContent = busy ? 'Auditing website…' : 'Run live audit'; if (elements.firstScan) { elements.firstScan.disabled = busy; elements.firstScan.textContent = busy ? 'Auditing website…' : 'Run live audit'; } }
   function esc(value) { const div = document.createElement('div'); div.textContent = value ?? ''; return div.innerHTML; }
+  function renderProjectList() {
+    if (!elements.projectList) return;
+    elements.projectList.innerHTML = state.projects.map((project) => {
+      const active = project.id === state.selectedProjectId ? ' active' : '';
+      const auditState = project.latest_run ? `${project.latest_run.visibility_score}% audited` : 'Needs live audit';
+      return `<button class="sidebar-project${active}" type="button" data-project-id="${project.id}"><strong>${esc(project.brand_name)}</strong><span>${esc(project.domain)}</span><small>${auditState}</small></button>`;
+    }).join('');
+  }
 
   async function loadProjects(preferredId) {
     const data = await request('/api/analytics/projects');
@@ -28,8 +36,9 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.empty.hidden = true; elements.dashboard.hidden = false;
     state.selectedProjectId = Number(preferredId) || state.selectedProjectId || state.projects[0].id;
     if (!state.projects.some((project) => project.id === state.selectedProjectId)) state.selectedProjectId = state.projects[0].id;
-    elements.picker.innerHTML = state.projects.map((project) => `<option value="${project.id}">${esc(project.brand_name)} · ${esc(project.domain)}</option>`).join('');
+    elements.picker.innerHTML = state.projects.map((project) => `<option value="${project.id}">${esc(project.brand_name)} · ${esc(project.website_url || project.domain)}</option>`).join('');
     elements.picker.value = state.selectedProjectId;
+    renderProjectList();
     await loadReport(state.selectedProjectId);
   }
   async function loadReport(projectId) {
@@ -41,7 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!run) { elements.report.hidden = true; elements.reportEmpty.hidden = false; elements.lastScan.textContent = 'Not audited yet'; return; }
     elements.report.hidden = false; elements.reportEmpty.hidden = true;
     elements.lastScan.textContent = `Last audit: ${formatDate(run.created_at)}`;
-    $('#project-name').textContent = `${project.brand_name} · ${project.domain}`;
+    $('#project-name').textContent = `${project.brand_name} · ${project.website_url || project.domain}`;
     $('#visibility-score').textContent = run.visibility_score; $('#mention-rate').textContent = run.mention_rate;
     $('#citation-rate').textContent = run.citation_rate; $('#share-of-voice').textContent = run.share_of_voice;
     $('#report-summary').textContent = run.summary; $('#trend-current').textContent = `${run.visibility_score}% current`;
@@ -63,6 +72,8 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#open-project-dialog').addEventListener('click', openDialog); $('#empty-add-project').addEventListener('click', openDialog); $('#close-project-dialog').addEventListener('click', closeDialog);
   elements.form.addEventListener('submit', async (event) => { event.preventDefault(); const error = $('#project-error'); error.hidden = true; const button = $('#save-project'); button.disabled = true; button.textContent = 'Creating…'; try { const project = await request('/api/analytics/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData(elements.form))) }); closeDialog(); await loadProjects(project.project.id); } catch (err) { error.textContent = err.message; error.hidden = false; } finally { button.disabled = false; button.textContent = 'Create workspace'; } });
   elements.picker.addEventListener('change', () => { state.selectedProjectId = Number(elements.picker.value); loadReport(state.selectedProjectId).catch((error) => showNotice(error.message)); });
+  elements.projectList.addEventListener('click', (event) => { const button = event.target.closest('[data-project-id]'); if (!button) return; state.selectedProjectId = Number(button.dataset.projectId); elements.picker.value = state.selectedProjectId; renderProjectList(); loadReport(state.selectedProjectId).catch((error) => showNotice(error.message)); });
+  $('#sidebar-add-project').addEventListener('click', openDialog);
   elements.scan.addEventListener('click', scan); elements.firstScan.addEventListener('click', scan);
   $('#delete-project').addEventListener('click', async () => { const project = state.projects.find((item) => item.id === state.selectedProjectId); if (!project || !window.confirm(`Remove ${project.domain} and all of its reports?`)) return; try { await request(`/api/analytics/projects/${project.id}`, { method: 'DELETE' }); state.selectedProjectId = null; await loadProjects(); } catch (error) { showNotice(error.message); } });
   $('#logout-button').addEventListener('click', async () => { try { await request('/api/logout', { method: 'POST' }); window.location.assign('/'); } catch (error) { showNotice(error.message); } });
