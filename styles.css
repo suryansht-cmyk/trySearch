@@ -1359,3 +1359,61 @@ h1, h2, h3, p, a, button, label, td, th { overflow-wrap: anywhere; }
     padding-right: max(0px, env(safe-area-inset-right));
   }
 }
+
+/* Mobile-only refinement: the desktop composition stays unchanged while the
+   phone experience becomes calmer, more spacious, and easier to scan. */
+@media (max-width: 560px) {
+  .home-page .ambient-scene { opacity: .42; }
+  .home-page .three-home-canvas { display: none; }
+  .home-page .ambient-grid { opacity: .06; }
+
+  .site-header { background: rgba(255, 255, 252, .97); }
+  .header-inner { min-height: 4.25rem; padding: .7rem 0; }
+  .brand { gap: .6rem; font-size: .96rem; }
+  .brand-logo { width: 2rem; height: 2rem; }
+  .mobile-menu-toggle { width: 2.65rem; height: 2.65rem; padding: .38rem; border: 1px solid var(--border); border-radius: .8rem; background: var(--surface); }
+  .mobile-menu-toggle span { width: 1.25rem; }
+  .mobile-nav[aria-hidden="false"] { gap: .4rem; margin: 0 .75rem .75rem; padding: .6rem; border: 1px solid var(--border); border-radius: 1rem; background: rgba(255, 255, 252, .98); box-shadow: 0 1rem 2.5rem rgba(0, 0, 0, .1); }
+  .mobile-nav a { padding: .65rem .75rem; border-radius: .65rem; font-weight: 650; }
+  .mobile-nav a:hover { background: var(--surface-subtle); }
+  .mobile-nav .mobile-cta { margin-top: .25rem; padding: .85rem 1rem; }
+
+  .home-page .hero { gap: 1rem; padding-top: 1.25rem; padding-bottom: 2rem; }
+  .home-page .hero-content { padding: 1.2rem; border: 1px solid rgba(190, 183, 164, .6); border-radius: 1.35rem; background: rgba(255, 255, 252, .72); box-shadow: 0 .8rem 2.2rem rgba(116, 73, 25, .06); }
+  .home-page .hero .eyebrow { margin: 0 0 .75rem; font-size: .7rem; letter-spacing: .1em; line-height: 1.45; }
+  .home-page .hero h1 { font-size: clamp(2.15rem, 9.2vw, 2.65rem); line-height: 1.01; letter-spacing: -.065em; }
+  .home-page .hero-actions { gap: .65rem; margin-top: 1.35rem; }
+  .home-page .hero-actions .button { min-height: 3.15rem; padding: .82rem 1rem; }
+  .home-page .hero-visual { margin-top: .2rem; }
+  .home-page .visual-card { padding: 1rem; border-radius: 1.2rem; background: rgba(255, 255, 252, .9); box-shadow: 0 1rem 2.5rem rgba(71, 43, 16, .1); }
+  .home-page .visual-card::before { opacity: .45; }
+  .home-page .card-header { margin-bottom: 1rem; font-size: .85rem; }
+  .home-page .visual-content { gap: .85rem; }
+  .home-page .metric { padding: .85rem .95rem; border-radius: .95rem; }
+  .home-page .metric strong { font-size: 1.65rem; }
+  .home-page .chart { min-height: 0; padding: .55rem .45rem .25rem; border-radius: 1rem; }
+  .home-page .detail-row { padding: .2rem 0; font-size: .86rem; }
+
+  .home-page .feature-grid { gap: .8rem; }
+  .home-page .feature-card { gap: .65rem; padding: 1.15rem; border-radius: 1.15rem; background: rgba(255, 255, 252, .78); }
+  .home-page .feature-card h2 { margin-bottom: .25rem; font-size: 1.12rem; }
+  .home-page .feature-card p { margin-top: 0; }
+  .home-page .master-setup { gap: 1rem; }
+  .home-page .master-setup-copy h2 { font-size: clamp(1.9rem, 9vw, 2.35rem); }
+  .home-page .master-setup-panel { padding: 1rem; border-radius: 1.2rem; background: rgba(255, 255, 252, .9); }
+  .home-page .master-tool-list { gap: .4rem; margin-top: 1rem; }
+  .home-page .master-tool-list span { padding: .28rem .55rem; font-size: .76rem; }
+  .home-page .section-highlight { gap: 1rem; }
+  .home-page .insights-panel { border-radius: 1.2rem; }
+  .home-page .why-grid article { padding: 1.15rem; }
+  .home-page .contact-panel { padding: 1rem; }
+}
+
+@media (max-width: 380px) {
+  .brand-name { font-size: .9rem; }
+  .home-page .hero-content { padding: 1rem; }
+  .home-page .hero h1 { font-size: clamp(2rem, 10vw, 2.35rem); }
+  .home-page .visual-card { padding: .85rem; }
+  .home-page .metric-label { font-size: .82rem; }
+  .home-page .master-setup-panel { padding: .85rem; }
+}
