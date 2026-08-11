@@ -24,8 +24,8 @@
       <section class="analytics-topbar">
         <div>
           <p class="eyebrow">AI Search Analytics</p>
-          <h1>Know how AI answers talk about your brand.</h1>
-          <p>Track visibility across leading AI search experiences, uncover citation gaps, and turn the best opportunities into content actions.</p>
+          <h1>Audit the real website signals AI systems can understand.</h1>
+          <p>Every scan fetches your public homepage and checks live metadata, content structure, crawlability, and structured data. We label this evidence clearly—no simulated AI-engine statistics.</p>
         </div>
         <button class="button button-primary" id="open-project-dialog" type="button">+ Add a website</button>
       </section>
@@ -47,37 +47,37 @@
           <select id="project-picker" aria-label="Tracked website"></select>
           <span id="last-scan" class="last-scan"></span>
           <button class="text-action" id="delete-project" type="button">Remove site</button>
-          <button class="button button-primary scan-button" id="scan-button" type="button">Run new scan</button>
+          <button class="button button-primary scan-button" id="scan-button" type="button">Run live audit</button>
         </div>
 
         <section class="analytics-empty report-empty" id="report-empty" hidden>
           <span class="empty-icon">↗</span>
           <h2>Your workspace is ready.</h2>
-          <p>Run the first scan to calculate an AI visibility baseline for this website.</p>
-          <button class="button button-primary" id="first-scan-button" type="button">Run first scan</button>
+          <p>Run the first live audit to calculate website-derived AI-search readiness signals.</p>
+          <button class="button button-primary" id="first-scan-button" type="button">Run live audit</button>
         </section>
 
         <div id="report-content" hidden>
           <div class="report-heading">
-            <div><p class="section-label">Latest benchmark</p><h2 id="project-name"></h2></div>
-            <span class="baseline-badge">Baseline scan</span>
+            <div><p class="section-label">Latest live website audit</p><h2 id="project-name"></h2></div>
+            <span class="baseline-badge">Source-derived</span>
           </div>
 
           <section class="score-grid" aria-label="Key visibility metrics">
-            <article class="score-card main-score"><span>AI visibility score</span><strong id="visibility-score">—</strong><small>out of 100</small></article>
-            <article class="score-card"><span>Brand mention rate</span><strong id="mention-rate">—</strong><small>of monitored answers</small></article>
-            <article class="score-card"><span>Citation rate</span><strong id="citation-rate">—</strong><small>answers linking to you</small></article>
-            <article class="score-card"><span>Share of voice</span><strong id="share-of-voice">—</strong><small>vs. comparable brands</small></article>
+            <article class="score-card main-score"><span>AI-search readiness</span><strong id="visibility-score">—</strong><small>website-derived score</small></article>
+            <article class="score-card"><span>Metadata coverage</span><strong id="mention-rate">—</strong><small>title and description</small></article>
+            <article class="score-card"><span>Content coverage</span><strong id="citation-rate">—</strong><small>page copy and headings</small></article>
+            <article class="score-card"><span>Crawlability</span><strong id="share-of-voice">—</strong><small>indexing and canonical signal</small></article>
           </section>
 
-          <section class="summary-card"><span class="summary-icon">✦</span><div><p class="section-label">What to do next</p><p id="report-summary"></p></div></section>
+          <section class="summary-card"><span class="summary-icon">✦</span><div><p class="section-label">What the live audit found</p><p id="report-summary"></p></div></section>
 
           <section class="report-grid">
-            <article class="analytics-card trend-card"><div class="card-title"><div><p class="section-label">Visibility trend</p><h3>Score history</h3></div><span id="trend-current"></span></div><div class="trend-chart" id="trend-chart" aria-label="AI visibility score history"></div></article>
-            <article class="analytics-card"><div class="card-title"><div><p class="section-label">Engine coverage</p><h3>Where you appear</h3></div></div><div class="engine-list" id="engine-list"></div></article>
+            <article class="analytics-card trend-card"><div class="card-title"><div><p class="section-label">Audit history</p><h3>Readiness score</h3></div><span id="trend-current"></span></div><div class="trend-chart" id="trend-chart" aria-label="Website AI-search readiness score history"></div></article>
+            <article class="analytics-card"><div class="card-title"><div><p class="section-label">Audit coverage</p><h3>What your website exposes</h3></div></div><div class="engine-list" id="engine-list"></div></article>
           </section>
 
-          <section class="analytics-card prompts-card"><div class="card-title"><div><p class="section-label">Prompt intelligence</p><h3>High-value answer opportunities</h3></div><a class="prompt-count" href="/prompt-intelligence">Open workspace</a><span class="prompt-count" id="prompt-count"></span></div><div class="table-scroll"><table><thead><tr><th>Prompt</th><th>Intent</th><th>Position</th><th>Cited?</th><th>Leading brand</th><th>Recommended action</th></tr></thead><tbody id="prompt-list"></tbody></table></div></section>
+          <section class="analytics-card prompts-card"><div class="card-title"><div><p class="section-label">Website improvements</p><h3>Evidence-backed next actions</h3></div><span class="prompt-count" id="prompt-count"></span></div><div class="table-scroll"><table><thead><tr><th>Website signal</th><th>Area</th><th>Score</th><th>Status</th><th>Evidence</th><th>Recommended action</th></tr></thead><tbody id="prompt-list"></tbody></table></div></section>
         </div>
       </section>
     </main>

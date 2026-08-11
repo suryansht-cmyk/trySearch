@@ -1,7 +1,13 @@
 import os
 import uuid
 import hashlib
-from urllib.parse import urlparse
+import ipaddress
+import re
+import socket
+from html.parser import HTMLParser
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin, urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from datetime import datetime, timedelta
 
 from flask import Flask, jsonify, request, send_from_directory, abort, session, redirect
@@ -490,65 +496,197 @@ def normalise_domain(value):
     return domain.removeprefix('www.')
 
 
-def make_analytics_report(project, run_number):
-    """Create a repeatable first-party baseline report for a tracked domain.
+class WebsiteAuditParser(HTMLParser):
+    """Small dependency-free HTML extractor for factual, on-page audit signals."""
 
-    Live provider querying needs customer-owned provider credentials and consent.
-    Until those connectors are configured, the product produces a deterministic
-    benchmark from the submitted domain, allowing the full dashboard workflow
-    (projects, history, scoring and opportunities) to operate end-to-end.
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.title_parts = []
+        self.heading_parts = []
+        self._active_heading = None
+        self._active_heading_parts = []
+        self._in_title = False
+        self._skip_text = 0
+        self.text_parts = []
+        self.description = ''
+        self.robots = ''
+        self.canonical = ''
+        self.language = ''
+        self.schema_blocks = 0
+        self.internal_links = 0
+        self.external_links = 0
+
+    def handle_starttag(self, tag, attrs):
+        attributes = {key.lower(): (value or '') for key, value in attrs}
+        if tag == 'html':
+            self.language = attributes.get('lang', '')
+        elif tag == 'title':
+            self._in_title = True
+        elif tag in {'h1', 'h2', 'h3'}:
+            self._active_heading = tag
+            self._active_heading_parts = []
+        elif tag in {'script', 'style', 'noscript'}:
+            self._skip_text += 1
+            if tag == 'script' and attributes.get('type', '').lower() == 'application/ld+json':
+                self.schema_blocks += 1
+        elif tag == 'meta':
+            name = attributes.get('name', '').lower()
+            property_name = attributes.get('property', '').lower()
+            content = attributes.get('content', '').strip()
+            if name == 'description' or property_name == 'og:description':
+                self.description = self.description or content
+            elif name == 'robots':
+                self.robots = content.lower()
+        elif tag == 'link' and 'canonical' in attributes.get('rel', '').lower():
+            self.canonical = attributes.get('href', '').strip()
+        elif tag == 'a':
+            href = attributes.get('href', '').strip()
+            if href.startswith(('http://', 'https://')):
+                self.external_links += 1
+            elif href:
+                self.internal_links += 1
+
+    def handle_endtag(self, tag):
+        if tag == 'title':
+            self._in_title = False
+        elif tag == self._active_heading:
+            heading = ' '.join(self._active_heading_parts).strip()
+            if heading:
+                self.heading_parts.append(heading)
+            self._active_heading = None
+            self._active_heading_parts = []
+        elif tag in {'script', 'style', 'noscript'} and self._skip_text:
+            self._skip_text -= 1
+
+    def handle_data(self, data):
+        text_value = ' '.join(data.split())
+        if not text_value:
+            return
+        if self._in_title:
+            self.title_parts.append(text_value)
+        if self._active_heading:
+            self._active_heading_parts.append(text_value)
+        if not self._skip_text:
+            self.text_parts.append(text_value)
+
+
+class SafeRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, new_url):
+        validate_public_web_url(urljoin(request.full_url, new_url))
+        return super().redirect_request(request, fp, code, msg, headers, new_url)
+
+
+def validate_public_web_url(url):
+    parsed = urlparse(url)
+    if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
+        raise ValueError('Only public HTTP(S) website URLs can be audited.')
+    host = parsed.hostname.lower().rstrip('.')
+    if host == 'localhost' or host.endswith('.local'):
+        raise ValueError('Local network addresses cannot be audited.')
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)}
+    except socket.gaierror as error:
+        raise ValueError('The website domain could not be resolved.') from error
+    if not addresses or any(not ipaddress.ip_address(address).is_global for address in addresses):
+        raise ValueError('Only publicly routable website addresses can be audited.')
+    return parsed
+
+
+def fetch_website_snapshot(domain):
+    """Fetch a public page and return transparent, first-party page evidence.
+
+    These facts are intentionally limited to what the site itself exposes. They
+    are not presented as a measurement of third-party AI model results.
     """
-    seed = int(hashlib.sha256(f"{project['domain']}:{run_number}".encode()).hexdigest()[:8], 16)
-    base = 46 + seed % 33
-    visibility = min(94, base + min(run_number - 1, 6))
-    mention = max(24, visibility - 10 + (seed >> 4) % 11)
-    citation = max(18, visibility - 19 + (seed >> 8) % 10)
-    share = max(12, visibility - 28 + (seed >> 12) % 12)
-    brands = ['G2', 'Capterra', 'HubSpot', 'Semrush', 'Ahrefs']
-    competitor = brands[(seed >> 16) % len(brands)]
-    engine_offsets = [('ChatGPT', 8), ('Perplexity', 3), ('Google AI Overviews', -3), ('Claude', -6), ('Microsoft Copilot', -9)]
-    engines = []
-    for index, (engine_name, offset) in enumerate(engine_offsets):
-        score = max(18, min(97, visibility + offset + ((seed >> (index + 1)) % 5)))
-        engines.append({
-            'engine': engine_name,
-            'visibility_score': score,
-            'mention_rate': max(15, score - 8),
-            'citations': max(1, round((score / 100) * 18)),
-            'change': (seed >> (index + 5)) % 8 - 2,
+    start_url = f'https://{domain}/'
+    try:
+        validate_public_web_url(start_url)
+        request = Request(start_url, headers={
+            'User-Agent': 'trySearch-Audit/1.0 (+https://trysearch.example/audit)',
+            'Accept': 'text/html,application/xhtml+xml',
         })
-    brand = project['brand_name']
-    prompts = [
-        (f'What are the best {project["industry"].lower()} solutions for growing teams?', 'Commercial', 3, 'No', competitor, 'Create a comparison page that answers buyer criteria and names your differentiator.'),
-        (f'How does {brand} compare with {competitor}?', 'Comparison', 2, 'Yes', competitor, 'Add independent proof, pricing context, and a concise alternatives section.'),
-        (f'How do I solve a {project["industry"].lower()} workflow problem?', 'Informational', 5, 'No', competitor, 'Publish a step-by-step guide with original examples and expert bylines.'),
-        (f'Who should use {brand}?', 'Navigational', 1, 'Yes', brand, 'Strengthen the product page with outcomes, FAQs, and schema-ready facts.'),
-        (f'Best tools to use instead of {competitor}', 'Alternative', 4, 'No', competitor, 'Build an alternative page around use cases where your product is strongest.'),
-    ]
-    prompt_rows = [
-        {
-            'prompt': prompt,
-            'intent': intent,
-            'position': position,
-            'cited': cited,
-            'leading_brand': leading_brand,
-            'opportunity': opportunity,
+        opener = build_opener(SafeRedirectHandler())
+        with opener.open(request, timeout=12) as response:
+            validate_public_web_url(response.geturl())
+            content_type = response.headers.get_content_type()
+            if content_type not in {'text/html', 'application/xhtml+xml'}:
+                raise ValueError('The website did not return an HTML page.')
+            html = response.read(800_001)
+            if len(html) > 800_000:
+                raise ValueError('The website homepage is too large to audit safely.')
+        parser = WebsiteAuditParser()
+        parser.feed(html.decode('utf-8', errors='replace'))
+        parser.close()
+        return {
+            'fetched': True,
+            'url': response.geturl(),
+            'title': ' '.join(parser.title_parts).strip(),
+            'description': parser.description,
+            'headings': parser.heading_parts[:12],
+            'word_count': len(re.findall(r"\b[\w'-]+\b", ' '.join(parser.text_parts))),
+            'schema_blocks': parser.schema_blocks,
+            'canonical': parser.canonical,
+            'noindex': 'noindex' in parser.robots,
+            'language': parser.language,
+            'internal_links': parser.internal_links,
+            'external_links': parser.external_links,
         }
-        for prompt, intent, position, cited, leading_brand, opportunity in prompts
+    except (HTTPError, URLError, TimeoutError, ValueError, OSError) as error:
+        return {'fetched': False, 'url': start_url, 'error': str(error)}
+
+
+def make_analytics_report(project, run_number):
+    """Build a report from the live, publicly accessible website—not mock data."""
+    snapshot = fetch_website_snapshot(project['domain'])
+    if not snapshot['fetched']:
+        message = f"Live audit unavailable: {snapshot['error']}"
+        return {
+            'visibility_score': 0, 'mention_rate': 0, 'citation_rate': 0, 'share_of_voice': 0,
+            'summary': f"{message} No AI visibility score was calculated, so this report contains no estimated model data.",
+            'engines': [{'engine': 'Website reachability', 'visibility_score': 0, 'mention_rate': 0, 'citations': 0, 'change': 0}],
+            'prompts': [{'prompt': 'Live homepage fetch', 'intent': 'Access', 'position': 0, 'cited': 'Missing', 'leading_brand': snapshot['url'], 'opportunity': message}],
+        }
+
+    metadata = (50 if snapshot['title'] else 0) + (50 if snapshot['description'] else 0)
+    content_coverage = min(100, round(min(snapshot['word_count'], 900) / 9 * 0.72 + min(len(snapshot['headings']), 6) / 6 * 35))
+    structured_data = 100 if snapshot['schema_blocks'] else 0
+    crawlability = 0 if snapshot['noindex'] else (100 if snapshot['canonical'] else 78)
+    readiness = round((metadata + content_coverage + structured_data + crawlability) / 4)
+
+    audit_rows = [
+        ('Structured data', 'Technical', structured_data, 'Present' if snapshot['schema_blocks'] else 'Missing', f"{snapshot['schema_blocks']} JSON-LD block(s)", 'Add valid JSON-LD for your organisation, product or service, and key pages.'),
+        ('Metadata', 'On-page', metadata, 'Present' if metadata == 100 else 'Needs work', f"Title: {'yes' if snapshot['title'] else 'no'} · description: {'yes' if snapshot['description'] else 'no'}", 'Write a unique title and concise meta description that clearly state the offer and audience.'),
+        ('Content coverage', 'Content', content_coverage, 'Present' if content_coverage >= 70 else 'Needs work', f"{snapshot['word_count']} visible words · {len(snapshot['headings'])} headings", 'Add clear question-led headings, original examples, and direct answers to core buyer questions.'),
+        ('Crawlability', 'Technical', crawlability, 'Present' if crawlability == 100 else 'Needs work', 'No noindex directive found' if not snapshot['noindex'] else 'noindex directive detected', 'Allow indexing and add a self-referencing canonical URL on the page.'),
     ]
+    engines = [
+        {'engine': label, 'visibility_score': score, 'mention_rate': score, 'citations': 1 if status == 'Present' else 0, 'change': 0}
+        for label, _area, score, status, _evidence, _action in audit_rows
+    ]
+    prompts = [
+        {'prompt': label, 'intent': area, 'position': score, 'cited': status, 'leading_brand': evidence, 'opportunity': action}
+        for label, area, score, status, evidence, action in audit_rows
+    ]
+    page_name = snapshot['title'] or project['domain']
     summary = (
-        f'{brand} is visible in {mention}% of the benchmarked AI responses. '
-        f'Focus first on citation coverage and comparison prompts where {competitor} currently leads.'
+        f"Live audit of {snapshot['url']} found '{page_name}'. AI-search readiness is {readiness}% based on publicly available page signals "
+        f"({snapshot['word_count']} visible words, {len(snapshot['headings'])} headings, and {snapshot['schema_blocks']} JSON-LD blocks). "
+        'This is a website-derived technical audit, not a claim about live ChatGPT, Claude, or Perplexity answers.'
     )
     return {
-        'visibility_score': visibility,
-        'mention_rate': mention,
-        'citation_rate': citation,
-        'share_of_voice': share,
+        'visibility_score': readiness,
+        'mention_rate': metadata,
+        'citation_rate': content_coverage,
+        'share_of_voice': crawlability,
         'summary': summary,
         'engines': engines,
-        'prompts': prompt_rows,
+        'prompts': prompts,
     }
+
+
+def is_legacy_mock_analytics_run(run):
+    """Recognise the deterministic reports created before live auditing existed."""
+    return 'benchmarked AI responses' in (run.get('summary') or '')
 
 
 def project_for_user(project_id, user_id):
@@ -600,11 +738,11 @@ def analytics_projects_endpoint():
         for row in project_rows:
             project = dict(row)
             latest = conn.execute(
-                select(analytics_runs.c.id, analytics_runs.c.visibility_score, analytics_runs.c.created_at)
+                select(analytics_runs.c.id, analytics_runs.c.visibility_score, analytics_runs.c.created_at, analytics_runs.c.summary)
                 .where(analytics_runs.c.project_id == project['id'])
                 .order_by(desc(analytics_runs.c.created_at)).limit(1)
             ).mappings().first()
-            project['latest_run'] = row_to_dict(latest) if latest else None
+            project['latest_run'] = row_to_dict(latest) if latest and not is_legacy_mock_analytics_run(latest) else None
             projects.append(row_to_dict(project))
     return jsonify({'projects': projects})
 
@@ -664,13 +802,16 @@ def analytics_report(project_id, user_id):
         if not run:
             return {'project': row_to_dict(project), 'run': None, 'engines': [], 'prompts': [], 'history': []}
         run = dict(run)
+        if is_legacy_mock_analytics_run(run):
+            return {'project': row_to_dict(project), 'run': None, 'engines': [], 'prompts': [], 'history': []}
         engines = [dict(row) for row in conn.execute(select(analytics_engine_metrics).where(
             analytics_engine_metrics.c.run_id == run['id']).order_by(desc(analytics_engine_metrics.c.visibility_score))).mappings().all()]
         prompts = [dict(row) for row in conn.execute(select(analytics_prompts).where(
             analytics_prompts.c.run_id == run['id']).order_by(analytics_prompts.c.position)).mappings().all()]
-        history = [row_to_dict(row) for row in conn.execute(select(
-            analytics_runs.c.visibility_score, analytics_runs.c.created_at).where(
-            analytics_runs.c.project_id == project_id).order_by(analytics_runs.c.created_at).limit(12)).mappings().all()]
+        history_rows = conn.execute(select(
+            analytics_runs.c.visibility_score, analytics_runs.c.created_at, analytics_runs.c.summary
+        ).where(analytics_runs.c.project_id == project_id).order_by(analytics_runs.c.created_at).limit(12)).mappings().all()
+        history = [row_to_dict(row) for row in history_rows if not is_legacy_mock_analytics_run(row)]
     return {'project': row_to_dict(project), 'run': row_to_dict(run), 'engines': engines, 'prompts': prompts, 'history': history}
 
 

@@ -16,8 +16,8 @@ document.addEventListener('DOMContentLoaded', () => {
     return data;
   }
   function showNotice(message) { elements.notice.textContent = message; elements.notice.hidden = !message; }
-  function formatDate(value) { return value ? new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Not scanned yet'; }
-  function setScanBusy(busy) { elements.scan.disabled = busy; elements.scan.textContent = busy ? 'Scanning…' : 'Run new scan'; if (elements.firstScan) { elements.firstScan.disabled = busy; elements.firstScan.textContent = busy ? 'Scanning…' : 'Run first scan'; } }
+  function formatDate(value) { return value ? new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Not audited yet'; }
+  function setScanBusy(busy) { elements.scan.disabled = busy; elements.scan.textContent = busy ? 'Auditing website…' : 'Run live audit'; if (elements.firstScan) { elements.firstScan.disabled = busy; elements.firstScan.textContent = busy ? 'Auditing website…' : 'Run live audit'; } }
   function esc(value) { const div = document.createElement('div'); div.textContent = value ?? ''; return div.innerHTML; }
 
   async function loadProjects(preferredId) {
@@ -38,18 +38,18 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   function renderReport(data) {
     const { project, run, engines, prompts, history } = data;
-    if (!run) { elements.report.hidden = true; elements.reportEmpty.hidden = false; elements.lastScan.textContent = 'Not scanned yet'; return; }
+    if (!run) { elements.report.hidden = true; elements.reportEmpty.hidden = false; elements.lastScan.textContent = 'Not audited yet'; return; }
     elements.report.hidden = false; elements.reportEmpty.hidden = true;
-    elements.lastScan.textContent = `Last scan: ${formatDate(run.created_at)}`;
+    elements.lastScan.textContent = `Last audit: ${formatDate(run.created_at)}`;
     $('#project-name').textContent = `${project.brand_name} · ${project.domain}`;
     $('#visibility-score').textContent = run.visibility_score; $('#mention-rate').textContent = run.mention_rate;
     $('#citation-rate').textContent = run.citation_rate; $('#share-of-voice').textContent = run.share_of_voice;
     $('#report-summary').textContent = run.summary; $('#trend-current').textContent = `${run.visibility_score}% current`;
     const chart = $('#trend-chart');
-    chart.innerHTML = history.length ? history.map((entry) => `<div class="trend-bar" style="height:${Math.max(18, entry.visibility_score)}%"><span>${entry.visibility_score}</span></div>`).join('') : '<span class="trend-empty">Run another scan to start a trend.</span>';
+    chart.innerHTML = history.length ? history.map((entry) => `<div class="trend-bar" style="height:${Math.max(18, entry.visibility_score)}%"><span>${entry.visibility_score}</span></div>`).join('') : '<span class="trend-empty">Run another live audit to start a trend.</span>';
     $('#engine-list').innerHTML = engines.map((engine) => { const sign = engine.change > 0 ? '+' : ''; const direction = engine.change < 0 ? 'down' : ''; return `<div class="engine-row"><strong>${esc(engine.engine)}</strong><div class="engine-track"><span style="width:${engine.visibility_score}%"></span></div><span class="engine-score">${engine.visibility_score}% <small class="engine-change ${direction}">${sign}${engine.change}</small></span></div>`; }).join('');
     $('#prompt-count').textContent = `${prompts.length} tracked prompts`;
-    $('#prompt-list').innerHTML = prompts.map((prompt) => `<tr><td>${esc(prompt.prompt)}</td><td><span class="tag">${esc(prompt.intent)}</span></td><td>#${prompt.position}</td><td class="cite-${prompt.cited === 'Yes' ? 'yes' : 'no'}">${esc(prompt.cited)}</td><td>${esc(prompt.leading_brand)}</td><td>${esc(prompt.opportunity)}</td></tr>`).join('');
+    $('#prompt-list').innerHTML = prompts.map((prompt) => `<tr><td>${esc(prompt.prompt)}</td><td><span class="tag">${esc(prompt.intent)}</span></td><td>${prompt.position}%</td><td class="cite-${prompt.cited === 'Present' ? 'yes' : 'no'}">${esc(prompt.cited)}</td><td>${esc(prompt.leading_brand)}</td><td>${esc(prompt.opportunity)}</td></tr>`).join('');
   }
   async function scan() {
     if (!state.selectedProjectId) return;
