@@ -24,8 +24,8 @@
       <section class="analytics-topbar">
         <div>
           <p class="eyebrow">AI Search Analytics</p>
-          <h1>Audit the real website signals AI systems can understand.</h1>
-          <p>Every scan fetches your public homepage and checks live metadata, content structure, crawlability, and structured data. We label this evidence clearly—no simulated AI-engine statistics.</p>
+          <h1>Measure AI search with evidence you can inspect.</h1>
+          <p>Combine a multi-page website crawl, verified Google Search Console queries, and saved Perplexity source and answer evidence. Every number names its source, prompt set, and scan time.</p>
         </div>
         <button class="button button-primary" id="open-project-dialog" type="button">+ Add a website</button>
       </section>
@@ -36,8 +36,8 @@
       <section class="analytics-empty" id="empty-state" hidden>
         <span class="empty-icon">✦</span>
         <p class="eyebrow">Start with a website</p>
-        <h2>Build your first AI search baseline.</h2>
-        <p>Add a client website, then run a scan to generate a persistent visibility report, engine breakdown, and content opportunities.</p>
+        <h2>Build your first evidence-backed baseline.</h2>
+        <p>Add the exact public website URL. You can then audit its pages, connect Search Console, and track approved prompts.</p>
         <button class="button button-primary" id="empty-add-project" type="button">Add a website</button>
       </section>
 
@@ -46,46 +46,107 @@
           <aside class="analytics-sidepanel" aria-label="Tracked website workspaces">
             <div class="sidepanel-heading"><div><p class="section-label">Workspaces</p><h2>Tracked sites</h2></div><button class="sidebar-add" id="sidebar-add-project" type="button" aria-label="Add a website">+</button></div>
             <div class="sidebar-project-list" id="sidebar-project-list"></div>
-            <div class="sidepanel-note"><strong>Live evidence only</strong><span>Scores come from the saved URL’s public HTML—not simulated AI answers.</span></div>
+            <div class="sidepanel-note"><strong>Measured, not modelled</strong><span>Unavailable sources stay unavailable. Provider or crawl failures are never displayed as measured zeroes.</span></div>
           </aside>
+
           <div class="analytics-core">
             <div class="project-bar">
               <label class="project-picker-label" for="project-picker">Tracked website</label>
               <select id="project-picker" aria-label="Tracked website"></select>
               <span id="last-scan" class="last-scan"></span>
               <button class="text-action" id="delete-project" type="button">Remove site</button>
-              <button class="button button-primary scan-button" id="scan-button" type="button">Run live audit</button>
+              <button class="button button-primary scan-button" id="scan-button" type="button">Run full audit</button>
             </div>
 
-            <section class="analytics-empty report-empty" id="report-empty" hidden>
-          <span class="empty-icon">↗</span>
-          <h2>Your workspace is ready.</h2>
-          <p>Run the first live audit to calculate website-derived AI-search readiness signals.</p>
-          <button class="button button-primary" id="first-scan-button" type="button">Run live audit</button>
+            <section class="source-status-strip" id="source-status" aria-label="Analytics data sources">
+              <div class="source-chip pending" id="crawl-source-status"><span class="source-dot"></span><div><strong>Website crawl</strong><small>Not audited</small></div></div>
+              <div class="source-chip pending" id="gsc-source-status"><span class="source-dot"></span><div><strong>Search Console</strong><small>Not connected</small></div></div>
+              <div class="source-chip pending" id="perplexity-source-status"><span class="source-dot"></span><div><strong>Perplexity evidence</strong><small>No scan</small></div></div>
             </section>
 
-            <div id="report-content" hidden>
-          <div class="report-heading">
-            <div><p class="section-label">Latest live website audit</p><h2 id="project-name"></h2></div>
-            <span class="baseline-badge">Source-derived</span>
-          </div>
+            <nav class="analytics-view-tabs" role="tablist" aria-label="Analytics views">
+              <button class="active" type="button" role="tab" aria-selected="true" data-view="overview">Overview</button>
+              <button type="button" role="tab" aria-selected="false" data-view="pages">Pages</button>
+              <button type="button" role="tab" aria-selected="false" data-view="search">Search queries</button>
+              <button type="button" role="tab" aria-selected="false" data-view="prompts">Prompts</button>
+              <button type="button" role="tab" aria-selected="false" data-view="evidence">AI evidence</button>
+              <button type="button" role="tab" aria-selected="false" data-view="opportunities">Opportunities</button>
+            </nav>
 
-          <section class="score-grid" aria-label="Key visibility metrics">
-            <article class="score-card main-score"><span>AI-search readiness</span><strong id="visibility-score">—</strong><small>website-derived score</small></article>
-            <article class="score-card"><span>Metadata coverage</span><strong id="mention-rate">—</strong><small>title and description</small></article>
-            <article class="score-card"><span>Content coverage</span><strong id="citation-rate">—</strong><small>page copy and headings</small></article>
-            <article class="score-card"><span>Crawlability</span><strong id="share-of-voice">—</strong><small>indexing and canonical signal</small></article>
-          </section>
+            <section class="analytics-view-panel active" id="overview-panel" role="tabpanel" data-panel="overview">
+              <section class="analytics-empty report-empty" id="report-empty" hidden>
+                <span class="empty-icon">↗</span><h2>Your crawl workspace is ready.</h2>
+                <p>Run the first full audit to inspect a bounded set of sitemap and internal pages.</p>
+                <button class="button button-primary" id="first-scan-button" type="button">Run full audit</button>
+              </section>
 
-          <section class="summary-card"><span class="summary-icon">✦</span><div><p class="section-label">What the live audit found</p><p id="report-summary"></p></div></section>
+              <div id="report-content" hidden>
+                <div class="report-heading"><div><p class="section-label">Latest website crawl</p><h2 id="project-name"></h2></div><span id="report-source-badge" class="baseline-badge">Website crawl</span></div>
+                <section class="score-grid" aria-label="Website audit metrics">
+                  <article class="score-card main-score"><span>AI-search readiness</span><strong><span id="visibility-score">—</span><small class="metric-unit">%</small></strong><small>fetched-page aggregate</small></article>
+                  <article class="score-card"><span>Metadata coverage</span><strong><span id="mention-rate">—</span><small class="metric-unit">%</small></strong><small>titles and descriptions</small></article>
+                  <article class="score-card"><span>Content coverage</span><strong><span id="citation-rate">—</span><small class="metric-unit">%</small></strong><small>copy and headings</small></article>
+                  <article class="score-card"><span>Crawlability</span><strong><span id="share-of-voice">—</span><small class="metric-unit">%</small></strong><small>indexing and canonical signals</small></article>
+                </section>
+                <section class="summary-card"><span class="summary-icon">✦</span><div><p class="section-label">What the crawl found</p><p id="report-summary"></p></div></section>
+                <section class="report-grid">
+                  <article class="analytics-card trend-card"><div class="card-title"><div><p class="section-label">Audit history</p><h3>Readiness score</h3></div><span id="trend-current"></span></div><div class="trend-chart" id="trend-chart" aria-label="Website readiness score history"></div></article>
+                  <article class="analytics-card"><div class="card-title"><div><p class="section-label">Audit coverage</p><h3>What the selected pages expose</h3></div></div><div class="engine-list" id="engine-list"></div></article>
+                </section>
+                <section class="analytics-card prompts-card"><div class="card-title"><div><p class="section-label">Website findings</p><h3>Evidence-backed next actions</h3></div><span class="prompt-count" id="prompt-count"></span></div><div class="table-scroll"><table><thead><tr><th>Finding</th><th>Area</th><th>Severity</th><th>Evidence</th><th>Recommended action</th></tr></thead><tbody id="prompt-list"></tbody></table></div></section>
+              </div>
+            </section>
 
-          <section class="report-grid">
-            <article class="analytics-card trend-card"><div class="card-title"><div><p class="section-label">Audit history</p><h3>Readiness score</h3></div><span id="trend-current"></span></div><div class="trend-chart" id="trend-chart" aria-label="Website AI-search readiness score history"></div></article>
-            <article class="analytics-card"><div class="card-title"><div><p class="section-label">Audit coverage</p><h3>What your website exposes</h3></div></div><div class="engine-list" id="engine-list"></div></article>
-          </section>
+            <section class="analytics-view-panel" id="pages-panel" role="tabpanel" data-panel="pages" hidden>
+              <div class="panel-heading"><div><p class="section-label">Multi-page audit</p><h2>Pages selected from sitemaps and internal links</h2></div><span class="baseline-badge">Public HTML</span></div>
+              <div class="compact-metrics" id="page-audit-metrics"></div>
+              <article class="analytics-card sitemap-card"><div class="card-title"><div><p class="section-label">Discovery</p><h3>Sitemap sources</h3></div></div><div id="sitemap-list" class="sitemap-list"></div></article>
+              <article class="analytics-card prompts-card"><div class="card-title"><div><p class="section-label">Page evidence</p><h3>Audited URLs</h3></div><span class="prompt-count" id="page-count"></span></div><div class="table-scroll"><table><thead><tr><th>Page</th><th>Fetch</th><th>Readiness</th><th>Words</th><th>Schema</th><th>Issues</th><th>Fetched</th></tr></thead><tbody id="page-audit-list"></tbody></table></div></article>
+            </section>
 
-          <section class="analytics-card prompts-card"><div class="card-title"><div><p class="section-label">Website improvements</p><h3>Evidence-backed next actions</h3></div><span class="prompt-count" id="prompt-count"></span></div><div class="table-scroll"><table><thead><tr><th>Website signal</th><th>Area</th><th>Score</th><th>Status</th><th>Evidence</th><th>Recommended action</th></tr></thead><tbody id="prompt-list"></tbody></table></div></section>
-            </div>
+            <section class="analytics-view-panel" id="search-panel" role="tabpanel" data-panel="search" hidden>
+              <article class="analytics-card connection-card"><div><p class="section-label">Owned search data</p><h2>Google Search Console</h2><p id="gsc-connection-copy">Connect a verified property to report real Google query performance.</p></div><div class="connection-actions"><a class="button button-primary" id="connect-search-console" href="#">Connect Google</a><button class="button button-secondary" id="sync-search-console" type="button" hidden>Sync last 28 days</button><button class="text-action" id="disconnect-search-console" type="button" hidden>Disconnect</button></div></article>
+              <div class="property-row" id="gsc-property-row" hidden><label for="gsc-property-picker">Search Console property</label><select id="gsc-property-picker"></select><span id="gsc-last-sync"></span></div>
+              <section class="score-grid search-score-grid" id="gsc-score-grid" hidden>
+                <article class="score-card"><span>Clicks</span><strong id="gsc-clicks">—</strong><small>saved query rows</small></article>
+                <article class="score-card"><span>Impressions</span><strong id="gsc-impressions">—</strong><small>saved query rows</small></article>
+                <article class="score-card"><span>CTR</span><strong><span id="gsc-ctr">—</span><small class="metric-unit">%</small></strong><small>clicks ÷ impressions</small></article>
+                <article class="score-card"><span>Average position</span><strong id="gsc-position">—</strong><small>impression-weighted</small></article>
+              </section>
+              <article class="analytics-card prompts-card" id="gsc-query-card" hidden><div class="card-title"><div><p class="section-label">Search Analytics API</p><h3>Top saved queries</h3></div><span class="prompt-count" id="gsc-date-range"></span></div><div class="table-scroll"><table><thead><tr><th>Query</th><th>Page</th><th>Clicks</th><th>Impressions</th><th>CTR</th><th>Position</th></tr></thead><tbody id="search-query-list"></tbody></table></div></article>
+            </section>
+
+            <section class="analytics-view-panel" id="prompts-panel" role="tabpanel" data-panel="prompts" hidden>
+              <div class="panel-heading"><div><p class="section-label">Measurement set</p><h2>Topics, competitors, and approved prompts</h2></div><button class="button button-primary" id="run-prompt-scan" type="button">Run Perplexity scan</button></div>
+              <div class="provider-config-strip" id="provider-config-strip"></div>
+              <div class="config-grid">
+                <article class="analytics-card"><div class="card-title"><div><p class="section-label">Topics</p><h3>Prompt groups</h3></div></div><form class="inline-form" id="topic-form"><input name="name" placeholder="Project management" required maxlength="180" /><button type="submit">Add</button></form><div class="chip-list" id="topic-list"></div></article>
+                <article class="analytics-card"><div class="card-title"><div><p class="section-label">Competitors</p><h3>Share-of-voice set</h3></div></div><form class="inline-form split" id="competitor-form"><input name="name" placeholder="Example competitor" required maxlength="180" /><input name="domain" placeholder="competitor.com" /><button type="submit">Add</button></form><div class="chip-list" id="competitor-list"></div></article>
+              </div>
+              <article class="analytics-card prompt-builder"><div class="card-title"><div><p class="section-label">Tracked prompts</p><h3>Questions this project measures</h3></div><span class="prompt-count" id="tracked-prompt-count"></span></div><form class="prompt-form" id="tracked-prompt-form"><textarea name="prompt" placeholder="What is the best project management software for remote teams?" required minlength="8" maxlength="1000"></textarea><select name="topic_id" id="prompt-topic-picker"><option value="">No topic</option></select><select name="intent"><option>Discovery</option><option>Comparison</option><option>Purchase</option><option>Support</option></select><button class="button button-primary" type="submit">Add prompt</button></form><div class="table-scroll"><table><thead><tr><th>Prompt</th><th>Topic</th><th>Intent</th><th>Status</th><th></th></tr></thead><tbody id="analytics-prompt-list"></tbody></table></div></article>
+              <article class="analytics-card schedule-card"><div><p class="section-label">Scheduled evidence</p><h3>Repeat the same prompt set</h3><p>Schedules are processed by the analytics worker and retain each provider response.</p></div><form id="scan-schedule-form"><label class="toggle-label"><input name="enabled" type="checkbox" /> Enabled</label><select name="frequency"><option value="daily">Daily</option><option value="weekly" selected>Weekly</option><option value="monthly">Monthly</option></select><input name="region" maxlength="2" placeholder="IN" aria-label="Two-letter region" /><button class="button button-secondary" type="submit">Save schedule</button></form></article>
+            </section>
+
+            <section class="analytics-view-panel" id="evidence-panel" role="tabpanel" data-panel="evidence" hidden>
+              <div class="panel-heading"><div><p class="section-label">Provider evidence</p><h2>Saved answers, citations, and ranked sources</h2></div><span class="baseline-badge" id="evidence-provider-badge">Perplexity API</span></div>
+              <section class="analytics-empty compact-empty" id="evidence-empty"><span class="empty-icon">⌕</span><h2>No provider scan yet.</h2><p>Add tracked prompts, configure the server API key, and run a scan.</p></section>
+              <div id="evidence-content" hidden>
+                <section class="score-grid evidence-score-grid">
+                  <article class="score-card"><span>Answer mention rate</span><strong><span id="evidence-mention-rate">—</span><small class="metric-unit">%</small></strong><small>brand-mentioned answers ÷ completed answers</small></article>
+                  <article class="score-card"><span>Citation rate</span><strong><span id="evidence-citation-rate">—</span><small class="metric-unit">%</small></strong><small>domain-cited answers ÷ completed answers</small></article>
+                  <article class="score-card"><span>Source presence</span><strong><span id="evidence-source-rate">—</span><small class="metric-unit">%</small></strong><small>ranked result sets containing the domain</small></article>
+                  <article class="score-card"><span>Brand share of voice</span><strong><span id="evidence-share-voice">—</span><small class="metric-unit">%</small></strong><small>answer-level mentions across the defined brand set</small></article>
+                </section>
+                <p class="evidence-method" id="evidence-method"></p>
+                <article class="analytics-card prompts-card"><div class="card-title"><div><p class="section-label">Inspectable records</p><h3>Prompt evidence</h3></div><span class="prompt-count" id="evidence-count"></span></div><div class="table-scroll"><table><thead><tr><th>Prompt</th><th>Topic</th><th>Provider / model</th><th>Mention</th><th>Citation</th><th>Source rank</th><th>Scanned</th><th></th></tr></thead><tbody id="evidence-list"></tbody></table></div></article>
+              </div>
+            </section>
+
+            <section class="analytics-view-panel" id="opportunities-panel" role="tabpanel" data-panel="opportunities" hidden>
+              <div class="panel-heading"><div><p class="section-label">Content opportunities</p><h2>Actions grounded in stored evidence IDs</h2></div><span class="baseline-badge" id="opportunity-source-badge">Evidence rules</span></div>
+              <section class="analytics-empty compact-empty" id="opportunities-empty"><span class="empty-icon">✦</span><h2>No evidence-backed opportunities yet.</h2><p>Run a provider scan first. The open model may summarize gaps, but it never creates the visibility metrics.</p></section>
+              <div class="opportunity-grid" id="opportunity-list"></div>
+            </section>
           </div>
         </div>
       </section>
@@ -95,13 +156,26 @@
       <form id="project-form">
         <button class="dialog-close" id="close-project-dialog" type="button" aria-label="Close">×</button>
         <p class="eyebrow">New tracked website</p><h2 id="dialog-title">Set up AI Search Analytics</h2>
-        <p class="dialog-copy">Add the public page you want to audit. You can use a full URL, including a specific page path.</p>
+        <p class="dialog-copy">Add the exact public URL that should seed the crawl. trySearch will discover a bounded set of same-site sitemap and internal pages.</p>
         <label>Website URL<input id="project-domain" name="domain" placeholder="https://example.com/page" autocomplete="url" required /></label>
         <label>Brand name<input id="project-brand" name="brand_name" placeholder="Example" required /></label>
         <label>Industry<select id="project-industry" name="industry"><option>Technology</option><option>Marketing</option><option>E-commerce</option><option>Finance</option><option>Healthcare</option><option>General</option></select></label>
         <p class="dialog-error" id="project-error" role="alert" hidden></p>
         <button class="button button-primary" id="save-project" type="submit">Create workspace</button>
       </form>
+    </dialog>
+
+    <dialog class="project-dialog evidence-dialog" id="evidence-dialog" aria-labelledby="evidence-dialog-title">
+      <div class="evidence-dialog-body">
+        <button class="dialog-close" id="close-evidence-dialog" type="button" aria-label="Close evidence">×</button>
+        <p class="eyebrow">Original provider record</p>
+        <h2 id="evidence-dialog-title">Prompt evidence</h2>
+        <p class="evidence-provider-meta" id="evidence-provider-meta"></p>
+        <section><p class="section-label">Prompt</p><p id="evidence-prompt"></p></section>
+        <section><p class="section-label">Saved answer</p><div class="evidence-answer" id="evidence-answer"></div></section>
+        <section><p class="section-label">Saved source results</p><div class="evidence-sources" id="evidence-sources"></div></section>
+        <details><summary>Raw provider JSON</summary><pre id="evidence-raw-json"></pre></details>
+      </div>
     </dialog>
     <script src="/pwa.js"></script>
     <script src="/analytics.js"></script>

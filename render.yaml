@@ -13,3 +13,19 @@ services:
         value: production
       - key: SECRET_KEY
         generateValue: true
+      - key: PERPLEXITY_API_KEY
+        sync: false
+      - key: PERPLEXITY_AGENT_PRESET
+        value: low
+      - key: HF_TOKEN
+        sync: false
+      - key: HF_MODEL
+        value: openai/gpt-oss-120b:preferred
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_OAUTH_REDIRECT_URI
+        sync: false
+      - key: OAUTH_TOKEN_ENCRYPTION_KEY
+        sync: false

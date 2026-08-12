@@ -2,13 +2,21 @@ import os
 import uuid
 import hashlib
 import ipaddress
+import json
 import re
+import secrets
 import socket
+import ssl
+import threading
+import time
+import xml.etree.ElementTree as ET
+from collections import deque
 from html.parser import HTMLParser
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener
-from datetime import datetime, timedelta
+from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlunparse
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
+from urllib.robotparser import RobotFileParser
+from datetime import date, datetime, timedelta
 
 from flask import Flask, jsonify, request, send_from_directory, abort, session, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -17,13 +25,18 @@ from sqlalchemy import (
     MetaData,
     Table,
     Column,
+    Boolean,
+    Float,
     Integer,
     String,
     Text,
     DateTime,
+    UniqueConstraint,
     select,
     insert,
+    update,
     desc,
+    func,
     text,
 )
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -142,6 +155,288 @@ analytics_prompts = Table(
     Column('cited', String(8), nullable=False),
     Column('leading_brand', String(150), nullable=False),
     Column('opportunity', String(255), nullable=False),
+)
+
+# Source-specific AI Search Analytics tables. The original analytics tables
+# above are retained for backwards compatibility, but their columns were used
+# for the first single-page technical audit. New evidence is stored with names
+# that describe what was actually measured.
+analytics_audit_jobs = Table(
+    'analytics_audit_jobs',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('project_id', Integer, nullable=False, index=True),
+    Column('user_id', Integer, nullable=False, index=True),
+    Column('job_type', String(40), nullable=False),
+    Column('provider', String(40), nullable=True),
+    Column('status', String(32), nullable=False),
+    Column('progress', Integer, nullable=False, default=0),
+    Column('total_items', Integer, nullable=False, default=0),
+    Column('completed_items', Integer, nullable=False, default=0),
+    Column('error', Text, nullable=True),
+    Column('created_at', DateTime, nullable=False),
+    Column('started_at', DateTime, nullable=True),
+    Column('completed_at', DateTime, nullable=True),
+)
+
+analytics_site_audits = Table(
+    'analytics_site_audits',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('project_id', Integer, nullable=False, index=True),
+    Column('job_id', Integer, nullable=True, index=True),
+    Column('status', String(32), nullable=False),
+    Column('source_type', String(40), nullable=False, default='website_crawl'),
+    Column('start_url', String(2048), nullable=False),
+    Column('final_url', String(2048), nullable=True),
+    Column('pages_discovered', Integer, nullable=False, default=0),
+    Column('pages_audited', Integer, nullable=False, default=0),
+    Column('pages_failed', Integer, nullable=False, default=0),
+    Column('readiness_score', Integer, nullable=True),
+    Column('metadata_score', Integer, nullable=True),
+    Column('content_score', Integer, nullable=True),
+    Column('crawlability_score', Integer, nullable=True),
+    Column('structured_data_score', Integer, nullable=True),
+    Column('summary', Text, nullable=False),
+    Column('created_at', DateTime, nullable=False),
+    Column('completed_at', DateTime, nullable=True),
+)
+
+analytics_audit_pages = Table(
+    'analytics_audit_pages',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('audit_id', Integer, nullable=False, index=True),
+    Column('url', String(2048), nullable=False),
+    Column('final_url', String(2048), nullable=True),
+    Column('fetched', Boolean, nullable=False, default=False),
+    Column('http_status', Integer, nullable=True),
+    Column('title', Text, nullable=True),
+    Column('description', Text, nullable=True),
+    Column('headings_count', Integer, nullable=False, default=0),
+    Column('word_count', Integer, nullable=False, default=0),
+    Column('schema_blocks', Integer, nullable=False, default=0),
+    Column('canonical', String(2048), nullable=True),
+    Column('noindex', Boolean, nullable=False, default=False),
+    Column('language', String(40), nullable=True),
+    Column('internal_links', Integer, nullable=False, default=0),
+    Column('external_links', Integer, nullable=False, default=0),
+    Column('readiness_score', Integer, nullable=True),
+    Column('metadata_score', Integer, nullable=True),
+    Column('content_score', Integer, nullable=True),
+    Column('crawlability_score', Integer, nullable=True),
+    Column('structured_data_score', Integer, nullable=True),
+    Column('issues_count', Integer, nullable=False, default=0),
+    Column('error', Text, nullable=True),
+    Column('fetched_at', DateTime, nullable=False),
+    UniqueConstraint('audit_id', 'url', name='uq_analytics_audit_page'),
+)
+
+analytics_audit_findings = Table(
+    'analytics_audit_findings',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('audit_id', Integer, nullable=False, index=True),
+    Column('page_id', Integer, nullable=True, index=True),
+    Column('code', String(80), nullable=False),
+    Column('area', String(40), nullable=False),
+    Column('severity', String(20), nullable=False),
+    Column('evidence', Text, nullable=False),
+    Column('recommendation', Text, nullable=False),
+)
+
+analytics_sitemaps = Table(
+    'analytics_sitemaps',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('audit_id', Integer, nullable=False, index=True),
+    Column('url', String(2048), nullable=False),
+    Column('status', String(32), nullable=False),
+    Column('urls_discovered', Integer, nullable=False, default=0),
+    Column('error', Text, nullable=True),
+)
+
+gsc_connections = Table(
+    'gsc_connections',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('project_id', Integer, nullable=False, unique=True),
+    Column('user_id', Integer, nullable=False, index=True),
+    Column('encrypted_refresh_token', Text, nullable=True),
+    Column('encrypted_access_token', Text, nullable=True),
+    Column('token_expires_at', DateTime, nullable=True),
+    Column('granted_scopes', Text, nullable=True),
+    Column('selected_property', String(2048), nullable=True),
+    Column('status', String(32), nullable=False),
+    Column('last_error', Text, nullable=True),
+    Column('created_at', DateTime, nullable=False),
+    Column('updated_at', DateTime, nullable=False),
+)
+
+gsc_properties = Table(
+    'gsc_properties',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('connection_id', Integer, nullable=False, index=True),
+    Column('site_url', String(2048), nullable=False),
+    Column('permission_level', String(80), nullable=False),
+    Column('selected', Boolean, nullable=False, default=False),
+    UniqueConstraint('connection_id', 'site_url', name='uq_gsc_connection_property'),
+)
+
+gsc_sync_runs = Table(
+    'gsc_sync_runs',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('project_id', Integer, nullable=False, index=True),
+    Column('connection_id', Integer, nullable=False, index=True),
+    Column('property_url', String(2048), nullable=False),
+    Column('status', String(32), nullable=False),
+    Column('start_date', String(10), nullable=False),
+    Column('end_date', String(10), nullable=False),
+    Column('rows_saved', Integer, nullable=False, default=0),
+    Column('data_state', String(20), nullable=False, default='final'),
+    Column('error', Text, nullable=True),
+    Column('created_at', DateTime, nullable=False),
+    Column('completed_at', DateTime, nullable=True),
+)
+
+gsc_query_rows = Table(
+    'gsc_query_rows',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('sync_run_id', Integer, nullable=False, index=True),
+    Column('query', Text, nullable=False),
+    Column('page', String(2048), nullable=True),
+    Column('clicks', Float, nullable=False),
+    Column('impressions', Float, nullable=False),
+    Column('ctr', Float, nullable=False),
+    Column('position', Float, nullable=False),
+)
+
+analytics_topics = Table(
+    'analytics_topics',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('project_id', Integer, nullable=False, index=True),
+    Column('name', String(180), nullable=False),
+    Column('created_at', DateTime, nullable=False),
+    UniqueConstraint('project_id', 'name', name='uq_analytics_topic'),
+)
+
+analytics_competitors = Table(
+    'analytics_competitors',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('project_id', Integer, nullable=False, index=True),
+    Column('name', String(180), nullable=False),
+    Column('domain', String(255), nullable=True),
+    Column('created_at', DateTime, nullable=False),
+    UniqueConstraint('project_id', 'name', name='uq_analytics_competitor'),
+)
+
+analytics_tracked_prompts = Table(
+    'analytics_tracked_prompts',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('project_id', Integer, nullable=False, index=True),
+    Column('topic_id', Integer, nullable=True, index=True),
+    Column('prompt', Text, nullable=False),
+    Column('intent', String(80), nullable=False, default='Discovery'),
+    Column('active', Boolean, nullable=False, default=True),
+    Column('created_at', DateTime, nullable=False),
+    Column('updated_at', DateTime, nullable=False),
+)
+
+analytics_prompt_scan_runs = Table(
+    'analytics_prompt_scan_runs',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('project_id', Integer, nullable=False, index=True),
+    Column('job_id', Integer, nullable=True, index=True),
+    Column('provider', String(40), nullable=False),
+    Column('model', String(160), nullable=False),
+    Column('region', String(8), nullable=True),
+    Column('competitor_snapshot', Text, nullable=True),
+    Column('status', String(32), nullable=False),
+    Column('prompt_count', Integer, nullable=False, default=0),
+    Column('completed_count', Integer, nullable=False, default=0),
+    Column('mention_rate', Float, nullable=True),
+    Column('citation_rate', Float, nullable=True),
+    Column('source_presence_rate', Float, nullable=True),
+    Column('share_of_voice', Float, nullable=True),
+    Column('recommendation_summary', Text, nullable=True),
+    Column('error', Text, nullable=True),
+    Column('created_at', DateTime, nullable=False),
+    Column('completed_at', DateTime, nullable=True),
+)
+
+analytics_provider_answers = Table(
+    'analytics_provider_answers',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('scan_run_id', Integer, nullable=False, index=True),
+    Column('prompt_id', Integer, nullable=False, index=True),
+    Column('prompt_text', Text, nullable=True),
+    Column('prompt_intent', String(80), nullable=True),
+    Column('topic_name', String(180), nullable=True),
+    Column('provider', String(40), nullable=False),
+    Column('model', String(160), nullable=False),
+    Column('status', String(32), nullable=False),
+    Column('search_request_id', String(255), nullable=True),
+    Column('answer_request_id', String(255), nullable=True),
+    Column('answer_text', Text, nullable=True),
+    Column('raw_response', Text, nullable=True),
+    Column('brand_mentioned', Boolean, nullable=True),
+    Column('brand_cited', Boolean, nullable=True),
+    Column('source_present', Boolean, nullable=True),
+    Column('best_source_rank', Integer, nullable=True),
+    Column('latency_ms', Integer, nullable=True),
+    Column('error', Text, nullable=True),
+    Column('created_at', DateTime, nullable=False),
+    Column('completed_at', DateTime, nullable=True),
+)
+
+analytics_answer_sources = Table(
+    'analytics_answer_sources',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('answer_id', Integer, nullable=False, index=True),
+    Column('rank', Integer, nullable=False),
+    Column('source_kind', String(32), nullable=False),
+    Column('title', Text, nullable=True),
+    Column('url', String(2048), nullable=False),
+    Column('domain', String(255), nullable=True),
+    Column('snippet', Text, nullable=True),
+    Column('published_at', String(80), nullable=True),
+)
+
+analytics_scan_schedules = Table(
+    'analytics_scan_schedules',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('project_id', Integer, nullable=False, unique=True),
+    Column('enabled', Boolean, nullable=False, default=False),
+    Column('frequency', String(20), nullable=False, default='weekly'),
+    Column('region', String(8), nullable=True),
+    Column('next_run_at', DateTime, nullable=True),
+    Column('last_run_at', DateTime, nullable=True),
+    Column('created_at', DateTime, nullable=False),
+    Column('updated_at', DateTime, nullable=False),
+)
+
+analytics_content_opportunities = Table(
+    'analytics_content_opportunities',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('project_id', Integer, nullable=False, index=True),
+    Column('scan_run_id', Integer, nullable=True, index=True),
+    Column('source', String(80), nullable=False),
+    Column('title', String(255), nullable=False),
+    Column('rationale', Text, nullable=False),
+    Column('evidence_refs', Text, nullable=False),
+    Column('priority', String(20), nullable=False),
+    Column('created_at', DateTime, nullable=False),
 )
 
 # Prompt Intelligence is a separate workflow: teams curate the questions they
@@ -290,11 +585,22 @@ def ensure_database_column(table_name, column_name, column_type):
     from sqlalchemy import inspect
     existing_columns = {column['name'] for column in inspect(engine).get_columns(table_name)}
     if column_name not in existing_columns:
-        with engine.begin() as conn:
-            conn.execute(text(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}'))
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}'))
+        except SQLAlchemyError:
+            # Two Gunicorn workers can initialize at the same time. Ignore only
+            # the race where the other worker successfully added this column.
+            refreshed = {column['name'] for column in inspect(engine).get_columns(table_name)}
+            if column_name not in refreshed:
+                raise
 
 
 ensure_database_column('analytics_projects', 'website_url', 'VARCHAR(2048)')
+ensure_database_column('analytics_provider_answers', 'prompt_text', 'TEXT')
+ensure_database_column('analytics_provider_answers', 'prompt_intent', 'VARCHAR(80)')
+ensure_database_column('analytics_provider_answers', 'topic_name', 'VARCHAR(180)')
+ensure_database_column('analytics_prompt_scan_runs', 'competitor_snapshot', 'TEXT')
 
 
 def get_database_identity():
@@ -353,8 +659,11 @@ def to_iso(dt):
 
 def row_to_dict(row):
     d = dict(row)
-    if 'created_at' in d and d['created_at'] is not None:
-        d['created_at'] = to_iso(d['created_at'])
+    for key, value in list(d.items()):
+        if isinstance(value, datetime):
+            d[key] = to_iso(value)
+        elif isinstance(value, date):
+            d[key] = value.isoformat()
     return d
 
 
@@ -540,6 +849,7 @@ class WebsiteAuditParser(HTMLParser):
         self.schema_blocks = 0
         self.internal_links = 0
         self.external_links = 0
+        self.link_hrefs = []
 
     def handle_starttag(self, tag, attrs):
         attributes = {key.lower(): (value or '') for key, value in attrs}
@@ -566,6 +876,8 @@ class WebsiteAuditParser(HTMLParser):
             self.canonical = attributes.get('href', '').strip()
         elif tag == 'a':
             href = attributes.get('href', '').strip()
+            if href:
+                self.link_hrefs.append(href)
             if href.startswith(('http://', 'https://')):
                 self.external_links += 1
             elif href:
@@ -601,20 +913,108 @@ class SafeRedirectHandler(HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, msg, headers, new_url)
 
 
+def verified_http_opener(*handlers):
+    """Use an explicit CA bundle so TLS verification is consistent on macOS and Linux."""
+    try:
+        import certifi
+        context = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        context = ssl.create_default_context()
+    return build_opener(*handlers, HTTPSHandler(context=context))
+
+
 def validate_public_web_url(url):
     parsed = urlparse(url)
     if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
         raise ValueError('Only public HTTP(S) website URLs can be audited.')
+    if parsed.username or parsed.password:
+        raise ValueError('Website URLs cannot contain credentials.')
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError('The website URL contains an invalid port.') from error
+    if port not in {None, 80, 443}:
+        raise ValueError('Only standard web ports can be audited.')
     host = parsed.hostname.lower().rstrip('.')
     if host == 'localhost' or host.endswith('.local'):
         raise ValueError('Local network addresses cannot be audited.')
     try:
-        addresses = {item[4][0] for item in socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)}
+        default_port = 443 if parsed.scheme == 'https' else 80
+        addresses = {item[4][0] for item in socket.getaddrinfo(host, port or default_port, type=socket.SOCK_STREAM)}
     except socket.gaierror as error:
         raise ValueError('The website domain could not be resolved.') from error
     if not addresses or any(not ipaddress.ip_address(address).is_global for address in addresses):
         raise ValueError('Only publicly routable website addresses can be audited.')
     return parsed
+
+
+AUDIT_USER_AGENT = os.environ.get('AUDIT_USER_AGENT', 'trySearch-Audit/2.0 (+https://trysearch.example/audit)')
+AUDIT_MAX_PAGES = max(1, min(int(os.environ.get('AUDIT_MAX_PAGES', '12')), 50))
+AUDIT_PAGE_BYTES = max(100_000, min(int(os.environ.get('AUDIT_PAGE_BYTES', '800000')), 2_000_000))
+AUDIT_SITEMAP_BYTES = max(200_000, min(int(os.environ.get('AUDIT_SITEMAP_BYTES', '2000000')), 5_000_000))
+AUDIT_REQUEST_DELAY_SECONDS = max(0.0, min(float(os.environ.get('AUDIT_REQUEST_DELAY_SECONDS', '0.05')), 2.0))
+ANALYTICS_MAX_TRACKED_PROMPTS = max(1, min(int(os.environ.get('ANALYTICS_MAX_TRACKED_PROMPTS', '100')), 500))
+PERPLEXITY_MAX_PROMPTS_PER_SCAN = max(1, min(int(os.environ.get('PERPLEXITY_MAX_PROMPTS_PER_SCAN', '25')), 100))
+
+
+def fetch_public_resource(url, *, max_bytes, accepted_types=None, timeout=12):
+    """Fetch one public resource after validating every redirect target."""
+    validate_public_web_url(url)
+    http_request = Request(url, headers={
+        'User-Agent': AUDIT_USER_AGENT,
+        'Accept': 'text/html,application/xhtml+xml,application/xml,text/xml,text/plain;q=0.9,*/*;q=0.2',
+    })
+    opener = verified_http_opener(SafeRedirectHandler())
+    with opener.open(http_request, timeout=timeout) as response:
+        final_url = response.geturl()
+        validate_public_web_url(final_url)
+        content_type = response.headers.get_content_type().lower()
+        if accepted_types and content_type not in accepted_types:
+            raise ValueError(f'The resource returned unsupported content type {content_type}.')
+        payload = response.read(max_bytes + 1)
+        if len(payload) > max_bytes:
+            raise ValueError('The resource is too large to audit safely.')
+        return {
+            'url': final_url,
+            'status': getattr(response, 'status', 200),
+            'content_type': content_type,
+            'charset': response.headers.get_content_charset() or 'utf-8',
+            'body': payload,
+        }
+
+
+def normalise_site_host(host):
+    return (host or '').lower().rstrip('.').removeprefix('www.')
+
+
+def same_site_host(host, allowed_hosts):
+    return normalise_site_host(host) in {normalise_site_host(item) for item in allowed_hosts if item}
+
+
+def canonicalise_crawl_url(base_url, href, allowed_hosts):
+    """Return a stable same-site HTTP URL, removing fragments and tracking parameters."""
+    if not href or href.startswith(('#', 'mailto:', 'tel:', 'javascript:', 'data:')):
+        return None
+    candidate = urljoin(base_url, href.strip())
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {'http', 'https'} or not parsed.hostname or not same_site_host(parsed.hostname, allowed_hosts):
+        return None
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        return None
+    tracking_prefixes = ('utm_',)
+    tracking_names = {'gclid', 'fbclid', 'msclkid', 'mc_cid', 'mc_eid'}
+    query_pairs = [
+        (key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.lower() not in tracking_names and not key.lower().startswith(tracking_prefixes)
+    ]
+    query = urlencode(sorted(query_pairs))
+    path = re.sub(r'/+', '/', parsed.path or '/')
+    netloc = parsed.hostname.lower()
+    if parsed_port and not ((parsed.scheme == 'https' and parsed_port == 443) or (parsed.scheme == 'http' and parsed_port == 80)):
+        netloc = f'{netloc}:{parsed_port}'
+    return urlunparse((parsed.scheme.lower(), netloc, path, '', query, ''))
 
 
 def fetch_website_snapshot(website_url):
@@ -625,26 +1025,29 @@ def fetch_website_snapshot(website_url):
     """
     start_url = website_url if website_url.startswith(('http://', 'https://')) else f'https://{website_url}/'
     try:
-        validate_public_web_url(start_url)
-        request = Request(start_url, headers={
-            'User-Agent': 'trySearch-Audit/1.0 (+https://trysearch.example/audit)',
-            'Accept': 'text/html,application/xhtml+xml',
-        })
-        opener = build_opener(SafeRedirectHandler())
-        with opener.open(request, timeout=12) as response:
-            validate_public_web_url(response.geturl())
-            content_type = response.headers.get_content_type()
-            if content_type not in {'text/html', 'application/xhtml+xml'}:
-                raise ValueError('The website did not return an HTML page.')
-            html = response.read(800_001)
-            if len(html) > 800_000:
-                raise ValueError('The website homepage is too large to audit safely.')
+        resource = fetch_public_resource(
+            start_url,
+            max_bytes=AUDIT_PAGE_BYTES,
+            accepted_types={'text/html', 'application/xhtml+xml'},
+        )
         parser = WebsiteAuditParser()
-        parser.feed(html.decode('utf-8', errors='replace'))
+        parser.feed(resource['body'].decode(resource['charset'], errors='replace'))
         parser.close()
+        final_host = urlparse(resource['url']).hostname
+        internal_links = []
+        external_links = 0
+        for href in parser.link_hrefs:
+            absolute = urljoin(resource['url'], href)
+            parsed_link = urlparse(absolute)
+            if parsed_link.scheme in {'http', 'https'} and parsed_link.hostname:
+                if normalise_site_host(parsed_link.hostname) == normalise_site_host(final_host):
+                    internal_links.append(absolute)
+                else:
+                    external_links += 1
         return {
             'fetched': True,
-            'url': response.geturl(),
+            'url': resource['url'],
+            'http_status': resource['status'],
             'title': ' '.join(parser.title_parts).strip(),
             'description': parser.description,
             'headings': parser.heading_parts[:12],
@@ -653,31 +1056,251 @@ def fetch_website_snapshot(website_url):
             'canonical': parser.canonical,
             'noindex': 'noindex' in parser.robots,
             'language': parser.language,
-            'internal_links': parser.internal_links,
-            'external_links': parser.external_links,
+            'internal_links': len(internal_links),
+            'external_links': external_links,
+            'links': internal_links,
         }
-    except (HTTPError, URLError, TimeoutError, ValueError, OSError) as error:
-        return {'fetched': False, 'url': start_url, 'error': str(error)}
+    except HTTPError as error:
+        return {'fetched': False, 'url': start_url, 'http_status': error.code, 'error': f'HTTP {error.code}: {error.reason}'}
+    except (URLError, TimeoutError, ValueError, OSError) as error:
+        return {'fetched': False, 'url': start_url, 'http_status': None, 'error': str(error)}
+
+
+def score_website_snapshot(snapshot):
+    """Score one fetched page and return explicit, page-level findings."""
+    if not snapshot.get('fetched'):
+        return {
+            'readiness_score': None, 'metadata_score': None, 'content_score': None,
+            'crawlability_score': None, 'structured_data_score': None,
+            'findings': [{
+                'code': 'fetch_failed', 'area': 'Access', 'severity': 'high',
+                'evidence': snapshot.get('error') or 'The page could not be fetched.',
+                'recommendation': 'Confirm the exact public URL, DNS, status code, and crawler access before retrying.',
+            }],
+        }
+
+    title_present = bool(snapshot.get('title'))
+    description_present = bool(snapshot.get('description'))
+    metadata_score = (50 if title_present else 0) + (50 if description_present else 0)
+    headings_count = len(snapshot.get('headings') or [])
+    word_count = snapshot.get('word_count') or 0
+    content_score = min(100, round(min(word_count, 900) / 9 * 0.72 + min(headings_count, 6) / 6 * 35))
+    structured_data_score = 100 if snapshot.get('schema_blocks') else 0
+    if snapshot.get('noindex'):
+        crawlability_score = 0
+    elif snapshot.get('canonical'):
+        crawlability_score = 100
+    else:
+        crawlability_score = 78
+    readiness_score = round((metadata_score + content_score + structured_data_score + crawlability_score) / 4)
+
+    findings = []
+    if not title_present:
+        findings.append({'code': 'missing_title', 'area': 'On-page', 'severity': 'high', 'evidence': 'No HTML title was found.', 'recommendation': 'Add a unique, descriptive title that names the page topic and brand.'})
+    if not description_present:
+        findings.append({'code': 'missing_description', 'area': 'On-page', 'severity': 'medium', 'evidence': 'No meta or Open Graph description was found.', 'recommendation': 'Add a concise description of the page answer, offer, and audience.'})
+    if headings_count == 0:
+        findings.append({'code': 'missing_headings', 'area': 'Content', 'severity': 'high', 'evidence': 'No H1–H3 headings were found.', 'recommendation': 'Organise the page with one clear H1 and question-led supporting headings.'})
+    if word_count < 250:
+        findings.append({'code': 'thin_content', 'area': 'Content', 'severity': 'medium', 'evidence': f'{word_count} visible words were found.', 'recommendation': 'Add direct answers, original examples, definitions, and supporting evidence for the page topic.'})
+    if not snapshot.get('schema_blocks'):
+        findings.append({'code': 'missing_schema', 'area': 'Structured data', 'severity': 'medium', 'evidence': 'No JSON-LD blocks were found.', 'recommendation': 'Add valid JSON-LD that accurately describes the organisation, service, product, article, or page.'})
+    if snapshot.get('noindex'):
+        findings.append({'code': 'noindex', 'area': 'Crawlability', 'severity': 'critical', 'evidence': 'A noindex robots directive was found.', 'recommendation': 'Remove noindex if this page should be discoverable in public search.'})
+    if not snapshot.get('canonical'):
+        findings.append({'code': 'missing_canonical', 'area': 'Crawlability', 'severity': 'low', 'evidence': 'No canonical link was found.', 'recommendation': 'Add a self-referencing canonical URL when this is the preferred public version.'})
+    if not snapshot.get('language'):
+        findings.append({'code': 'missing_language', 'area': 'Accessibility', 'severity': 'low', 'evidence': 'The HTML element has no lang attribute.', 'recommendation': 'Set the document language so parsers can interpret the page correctly.'})
+    return {
+        'readiness_score': readiness_score,
+        'metadata_score': metadata_score,
+        'content_score': content_score,
+        'crawlability_score': crawlability_score,
+        'structured_data_score': structured_data_score,
+        'findings': findings,
+    }
+
+
+def sitemap_locations(xml_body):
+    root = ET.fromstring(xml_body)
+    root_name = root.tag.rsplit('}', 1)[-1].lower()
+    locations = []
+    for element in root.iter():
+        if element.tag.rsplit('}', 1)[-1].lower() == 'loc' and element.text:
+            locations.append(element.text.strip())
+    return root_name, locations
+
+
+def discover_sitemap_pages(base_url, allowed_hosts, max_candidates):
+    """Read robots.txt and bounded sitemap indexes without leaving the site."""
+    parsed_base = urlparse(base_url)
+    origin = f'{parsed_base.scheme}://{parsed_base.netloc}'
+    robots_url = urljoin(origin, '/robots.txt')
+    sitemap_queue = deque()
+    sitemap_records = []
+    robots_parser = RobotFileParser()
+    robots_parser.set_url(robots_url)
+    try:
+        resource = fetch_public_resource(robots_url, max_bytes=500_000, accepted_types={'text/plain', 'text/html'})
+        robots_text = resource['body'].decode(resource['charset'], errors='replace')
+        robots_parser.parse(robots_text.splitlines())
+        for line in robots_text.splitlines():
+            match = re.match(r'^\s*sitemap\s*:\s*(\S+)\s*$', line, flags=re.I)
+            if match:
+                candidate = canonicalise_crawl_url(origin, match.group(1), allowed_hosts)
+                if candidate:
+                    sitemap_queue.append(candidate)
+    except (HTTPError, URLError, TimeoutError, ValueError, OSError):
+        # Absence of robots.txt does not block a public audit.
+        robots_parser.parse([])
+
+    default_sitemap = canonicalise_crawl_url(origin, '/sitemap.xml', allowed_hosts)
+    if default_sitemap and default_sitemap not in sitemap_queue:
+        sitemap_queue.append(default_sitemap)
+
+    page_urls = []
+    visited_sitemaps = set()
+    while sitemap_queue and len(visited_sitemaps) < 8 and len(page_urls) < max_candidates:
+        sitemap_url = sitemap_queue.popleft()
+        if sitemap_url in visited_sitemaps:
+            continue
+        visited_sitemaps.add(sitemap_url)
+        record = {'url': sitemap_url, 'status': 'failed', 'urls_discovered': 0, 'error': None}
+        try:
+            resource = fetch_public_resource(
+                sitemap_url,
+                max_bytes=AUDIT_SITEMAP_BYTES,
+                accepted_types={'application/xml', 'text/xml', 'application/rss+xml', 'text/plain'},
+            )
+            root_name, locations = sitemap_locations(resource['body'])
+            if root_name == 'sitemapindex':
+                for location in locations:
+                    child = canonicalise_crawl_url(sitemap_url, location, allowed_hosts)
+                    if child and child not in visited_sitemaps and len(sitemap_queue) < 16:
+                        sitemap_queue.append(child)
+            else:
+                for location in locations:
+                    page_url = canonicalise_crawl_url(sitemap_url, location, allowed_hosts)
+                    if page_url and page_url not in page_urls:
+                        page_urls.append(page_url)
+                        if len(page_urls) >= max_candidates:
+                            break
+            record.update(status='fetched', urls_discovered=len(locations))
+        except (HTTPError, URLError, TimeoutError, ValueError, OSError, ET.ParseError) as error:
+            record['error'] = str(error)
+        sitemap_records.append(record)
+    return page_urls, sitemap_records, robots_parser
+
+
+def crawl_website(website_url, *, max_pages=None, progress_callback=None):
+    """Perform a bounded, same-site crawl seeded by sitemaps and internal links."""
+    max_pages = max_pages or AUDIT_MAX_PAGES
+    start_url = website_url if website_url.startswith(('http://', 'https://')) else f'https://{website_url}/'
+    first_snapshot = fetch_website_snapshot(start_url)
+    if not first_snapshot.get('fetched'):
+        scored = score_website_snapshot(first_snapshot)
+        first_snapshot.update(scored)
+        first_snapshot['requested_url'] = start_url
+        first_snapshot['fetched_at'] = datetime.utcnow()
+        return {
+            'status': 'failed', 'start_url': start_url, 'final_url': None,
+            'pages_discovered': 1, 'pages_audited': 0, 'pages_failed': 1,
+            'pages': [first_snapshot], 'sitemaps': [], 'summary': f"Multi-page audit unavailable: {first_snapshot.get('error', 'The start page could not be fetched.')}",
+            'readiness_score': None, 'metadata_score': None, 'content_score': None,
+            'crawlability_score': None, 'structured_data_score': None,
+        }
+
+    start_host = urlparse(start_url).hostname
+    final_host = urlparse(first_snapshot['url']).hostname
+    allowed_hosts = {start_host, final_host}
+    sitemap_urls, sitemap_records, robots_parser = discover_sitemap_pages(
+        first_snapshot['url'], allowed_hosts, max(max_pages * 5, max_pages)
+    )
+
+    seed_url = canonicalise_crawl_url(first_snapshot['url'], first_snapshot['url'], allowed_hosts) or first_snapshot['url']
+    queue = deque([seed_url])
+    for page_url in sitemap_urls:
+        if page_url != seed_url:
+            queue.append(page_url)
+    for href in first_snapshot.get('links', []):
+        candidate = canonicalise_crawl_url(first_snapshot['url'], href, allowed_hosts)
+        if candidate and candidate not in queue:
+            queue.append(candidate)
+
+    seen = set()
+    pages = []
+    while queue and len(pages) < max_pages:
+        requested_url = queue.popleft()
+        if requested_url in seen:
+            continue
+        seen.add(requested_url)
+        if requested_url == seed_url:
+            snapshot = dict(first_snapshot)
+        elif not robots_parser.can_fetch(AUDIT_USER_AGENT, requested_url):
+            snapshot = {'fetched': False, 'url': requested_url, 'http_status': None, 'error': 'Blocked by robots.txt for the trySearch audit user agent.'}
+        else:
+            if AUDIT_REQUEST_DELAY_SECONDS:
+                time.sleep(AUDIT_REQUEST_DELAY_SECONDS)
+            snapshot = fetch_website_snapshot(requested_url)
+        snapshot['requested_url'] = requested_url
+        snapshot['fetched_at'] = datetime.utcnow()
+        snapshot.update(score_website_snapshot(snapshot))
+        pages.append(snapshot)
+
+        if snapshot.get('fetched'):
+            for href in snapshot.get('links', []):
+                candidate = canonicalise_crawl_url(snapshot['url'], href, allowed_hosts)
+                if candidate and candidate not in seen and candidate not in queue and len(queue) < max_pages * 5:
+                    queue.append(candidate)
+        if progress_callback:
+            progress_callback(len(pages), min(max_pages, len(pages) + len(queue)))
+
+    successful = [page for page in pages if page.get('fetched')]
+    failed_count = len(pages) - len(successful)
+    metric_names = ('readiness_score', 'metadata_score', 'content_score', 'crawlability_score', 'structured_data_score')
+    aggregates = {
+        metric: round(sum(page[metric] for page in successful) / len(successful)) if successful else None
+        for metric in metric_names
+    }
+    status = 'succeeded' if successful and not failed_count else ('partial' if successful else 'failed')
+    discovered_count = max(len(seen) + len(queue), len(sitemap_urls), len(pages))
+    summary = (
+        f"Audited {len(successful)} of {min(discovered_count, max_pages)} selected pages from {len(sitemap_records)} sitemap source(s). "
+        f"The aggregate AI-search readiness score is {aggregates['readiness_score']}% and is derived only from fetched website evidence."
+        if successful else 'No public HTML pages could be audited, so no readiness score was calculated.'
+    )
+    return {
+        'status': status,
+        'start_url': start_url,
+        'final_url': first_snapshot['url'],
+        'pages_discovered': discovered_count,
+        'pages_audited': len(successful),
+        'pages_failed': failed_count,
+        'pages': pages,
+        'sitemaps': sitemap_records,
+        'summary': summary,
+        **aggregates,
+    }
 
 
 def make_analytics_report(project, run_number):
-    """Build a report from the live, publicly accessible website—not mock data."""
-    snapshot = fetch_website_snapshot(project.get('website_url') or project['domain'])
-    if not snapshot['fetched']:
-        message = f"Live audit unavailable: {snapshot['error']}"
+    """Compatibility report built from a one-page factual crawl, never mock data."""
+    page = fetch_website_snapshot(project.get('website_url') or project['domain'])
+    page.update(score_website_snapshot(page))
+    if not page.get('fetched'):
+        message = f"Live audit unavailable: {page.get('error', 'The page could not be fetched.')}"
         return {
             'visibility_score': 0, 'mention_rate': 0, 'citation_rate': 0, 'share_of_voice': 0,
             'summary': f"{message} No AI visibility score was calculated, so this report contains no estimated model data.",
             'engines': [{'engine': 'Website reachability', 'visibility_score': 0, 'mention_rate': 0, 'citations': 0, 'change': 0}],
-            'prompts': [{'prompt': 'Live homepage fetch', 'intent': 'Access', 'position': 0, 'cited': 'Missing', 'leading_brand': snapshot['url'], 'opportunity': message}],
+            'prompts': [{'prompt': 'Live page fetch', 'intent': 'Access', 'position': 0, 'cited': 'Unavailable', 'leading_brand': page['url'], 'opportunity': message}],
         }
-
-    metadata = (50 if snapshot['title'] else 0) + (50 if snapshot['description'] else 0)
-    content_coverage = min(100, round(min(snapshot['word_count'], 900) / 9 * 0.72 + min(len(snapshot['headings']), 6) / 6 * 35))
-    structured_data = 100 if snapshot['schema_blocks'] else 0
-    crawlability = 0 if snapshot['noindex'] else (100 if snapshot['canonical'] else 78)
-    readiness = round((metadata + content_coverage + structured_data + crawlability) / 4)
-
+    snapshot = page
+    metadata = snapshot['metadata_score']
+    content_coverage = snapshot['content_score']
+    structured_data = snapshot['structured_data_score']
+    crawlability = snapshot['crawlability_score']
+    readiness = snapshot['readiness_score']
     audit_rows = [
         ('Structured data', 'Technical', structured_data, 'Present' if snapshot['schema_blocks'] else 'Missing', f"{snapshot['schema_blocks']} JSON-LD block(s)", 'Add valid JSON-LD for your organisation, product or service, and key pages.'),
         ('Metadata', 'On-page', metadata, 'Present' if metadata == 100 else 'Needs work', f"Title: {'yes' if snapshot['title'] else 'no'} · description: {'yes' if snapshot['description'] else 'no'}", 'Write a unique title and concise meta description that clearly state the offer and audience.'),
@@ -709,9 +1332,189 @@ def make_analytics_report(project, run_number):
     }
 
 
+def create_analytics_job(project, user_id, job_type, provider=None):
+    now = datetime.utcnow()
+    with engine.begin() as conn:
+        result = conn.execute(insert(analytics_audit_jobs).values(
+            project_id=project['id'], user_id=user_id, job_type=job_type,
+            provider=provider, status='queued', progress=0, total_items=0,
+            completed_items=0, error=None, created_at=now,
+            started_at=None, completed_at=None,
+        ))
+    return result.inserted_primary_key[0]
+
+
+def update_analytics_job(job_id, **values):
+    with engine.begin() as conn:
+        conn.execute(update(analytics_audit_jobs).where(analytics_audit_jobs.c.id == job_id).values(**values))
+
+
+def analytics_job_for_user(job_id, user_id):
+    with engine.connect() as conn:
+        row = conn.execute(select(analytics_audit_jobs).where(
+            (analytics_audit_jobs.c.id == job_id) & (analytics_audit_jobs.c.user_id == user_id)
+        )).mappings().first()
+    return row_to_dict(row) if row else None
+
+
+def persist_site_audit(project_id, job_id, crawl):
+    """Persist the aggregate, every selected page, sitemap, and finding atomically."""
+    now = datetime.utcnow()
+    with engine.begin() as conn:
+        result = conn.execute(insert(analytics_site_audits).values(
+            project_id=project_id, job_id=job_id, status=crawl['status'],
+            source_type='website_crawl', start_url=crawl['start_url'][:2048],
+            final_url=(crawl.get('final_url') or '')[:2048] or None,
+            pages_discovered=crawl['pages_discovered'], pages_audited=crawl['pages_audited'],
+            pages_failed=crawl['pages_failed'], readiness_score=crawl['readiness_score'],
+            metadata_score=crawl['metadata_score'], content_score=crawl['content_score'],
+            crawlability_score=crawl['crawlability_score'],
+            structured_data_score=crawl['structured_data_score'], summary=crawl['summary'],
+            created_at=now, completed_at=now,
+        ))
+        audit_id = result.inserted_primary_key[0]
+
+        for sitemap in crawl.get('sitemaps', []):
+            conn.execute(insert(analytics_sitemaps).values(
+                audit_id=audit_id, url=sitemap['url'][:2048], status=sitemap['status'],
+                urls_discovered=sitemap.get('urls_discovered', 0), error=sitemap.get('error'),
+            ))
+
+        for page in crawl.get('pages', []):
+            score = page.get('readiness_score')
+            page_result = conn.execute(insert(analytics_audit_pages).values(
+                audit_id=audit_id, url=page.get('requested_url', page.get('url', ''))[:2048],
+                final_url=(page.get('url') or '')[:2048] or None,
+                fetched=bool(page.get('fetched')), http_status=page.get('http_status'),
+                title=page.get('title'), description=page.get('description'),
+                headings_count=len(page.get('headings') or []), word_count=page.get('word_count', 0),
+                schema_blocks=page.get('schema_blocks', 0), canonical=(page.get('canonical') or '')[:2048] or None,
+                noindex=bool(page.get('noindex')), language=(page.get('language') or '')[:40] or None,
+                internal_links=page.get('internal_links', 0), external_links=page.get('external_links', 0),
+                readiness_score=score, metadata_score=page.get('metadata_score'),
+                content_score=page.get('content_score'), crawlability_score=page.get('crawlability_score'),
+                structured_data_score=page.get('structured_data_score'),
+                issues_count=len(page.get('findings') or []), error=page.get('error'),
+                fetched_at=page.get('fetched_at') or now,
+            ))
+            page_id = page_result.inserted_primary_key[0]
+            for finding in page.get('findings', []):
+                conn.execute(insert(analytics_audit_findings).values(
+                    audit_id=audit_id, page_id=page_id, code=finding['code'], area=finding['area'],
+                    severity=finding['severity'], evidence=finding['evidence'],
+                    recommendation=finding['recommendation'],
+                ))
+
+        conn.execute(update(analytics_projects).where(analytics_projects.c.id == project_id).values(updated_at=now))
+    return audit_id
+
+
+def latest_site_audit(project_id):
+    with engine.connect() as conn:
+        audit = conn.execute(select(analytics_site_audits).where(
+            analytics_site_audits.c.project_id == project_id
+        ).order_by(desc(analytics_site_audits.c.created_at)).limit(1)).mappings().first()
+        if not audit:
+            return None
+        audit = dict(audit)
+        pages = [row_to_dict(row) for row in conn.execute(select(analytics_audit_pages).where(
+            analytics_audit_pages.c.audit_id == audit['id']
+        ).order_by(desc(analytics_audit_pages.c.readiness_score), analytics_audit_pages.c.url)).mappings().all()]
+        findings = [row_to_dict(row) for row in conn.execute(select(analytics_audit_findings).where(
+            analytics_audit_findings.c.audit_id == audit['id']
+        ).order_by(analytics_audit_findings.c.severity, analytics_audit_findings.c.id)).mappings().all()]
+        sitemaps = [row_to_dict(row) for row in conn.execute(select(analytics_sitemaps).where(
+            analytics_sitemaps.c.audit_id == audit['id']
+        ).order_by(analytics_sitemaps.c.id)).mappings().all()]
+        history = [row_to_dict(row) for row in conn.execute(select(
+            analytics_site_audits.c.id, analytics_site_audits.c.status,
+            analytics_site_audits.c.readiness_score, analytics_site_audits.c.pages_audited,
+            analytics_site_audits.c.created_at,
+        ).where(analytics_site_audits.c.project_id == project_id)
+            .order_by(desc(analytics_site_audits.c.created_at)).limit(12)).mappings().all()]
+    history.reverse()
+    return {'run': row_to_dict(audit), 'pages': pages, 'findings': findings, 'sitemaps': sitemaps, 'history': history}
+
+
+def run_site_audit_job(job_id):
+    """Claim and execute one durable crawl job. A cron worker can retry queued jobs."""
+    with engine.begin() as conn:
+        job = conn.execute(select(analytics_audit_jobs).where(
+            analytics_audit_jobs.c.id == job_id
+        )).mappings().first()
+        if not job or job['status'] not in {'queued', 'failed_retryable'}:
+            return
+        claimed = conn.execute(update(analytics_audit_jobs).where(
+            (analytics_audit_jobs.c.id == job_id) &
+            (analytics_audit_jobs.c.status.in_(['queued', 'failed_retryable']))
+        ).values(status='running', started_at=datetime.utcnow(), completed_at=None, error=None))
+        if claimed.rowcount != 1:
+            return
+        project = conn.execute(select(analytics_projects).where(
+            analytics_projects.c.id == job['project_id']
+        )).mappings().first()
+        existing_audit = conn.execute(select(
+            analytics_site_audits.c.status, analytics_site_audits.c.pages_audited,
+        ).where(analytics_site_audits.c.job_id == job_id)
+            .order_by(desc(analytics_site_audits.c.created_at)).limit(1)).mappings().first()
+    if not project:
+        update_analytics_job(job_id, status='failed_terminal', error='Project no longer exists.', completed_at=datetime.utcnow())
+        return
+    if existing_audit:
+        succeeded = existing_audit['status'] != 'failed'
+        update_analytics_job(
+            job_id, status='succeeded' if succeeded else 'failed_terminal', progress=100,
+            completed_items=existing_audit['pages_audited'], total_items=existing_audit['pages_audited'],
+            error=None if succeeded else 'The saved website audit did not complete successfully.',
+            completed_at=datetime.utcnow(),
+        )
+        return
+
+    def progress(completed, total):
+        percent = min(99, round(completed / max(total, 1) * 100))
+        update_analytics_job(job_id, completed_items=completed, total_items=total, progress=percent)
+
+    try:
+        project = dict(project)
+        crawl = crawl_website(project.get('website_url') or project['domain'], progress_callback=progress)
+        persist_site_audit(project['id'], job_id, crawl)
+        update_analytics_job(
+            job_id, status='succeeded' if crawl['status'] != 'failed' else 'failed_terminal',
+            progress=100, completed_items=len(crawl['pages']), total_items=len(crawl['pages']),
+            error=None if crawl['status'] != 'failed' else crawl['summary'], completed_at=datetime.utcnow(),
+        )
+    except Exception as error:  # A durable status is more useful than a dropped worker traceback.
+        update_analytics_job(job_id, status='failed_retryable', error=str(error)[:2000], completed_at=datetime.utcnow())
+
+
+_analytics_threads = set()
+_analytics_threads_lock = threading.Lock()
+
+
+def start_background_analytics_job(job_id, target):
+    """Start low-volume on-demand work; the CLI worker remains the recovery path."""
+    def runner():
+        try:
+            target(job_id)
+        except Exception as error:
+            update_analytics_job(
+                job_id, status='failed_retryable', error=str(error)[:2000],
+                completed_at=datetime.utcnow(),
+            )
+        finally:
+            with _analytics_threads_lock:
+                _analytics_threads.discard(threading.current_thread())
+
+    worker = threading.Thread(target=runner, name=f'analytics-job-{job_id}', daemon=True)
+    with _analytics_threads_lock:
+        _analytics_threads.add(worker)
+    worker.start()
+
+
 def is_legacy_mock_analytics_run(run):
-    """Recognise the deterministic reports created before live auditing existed."""
-    return 'benchmarked AI responses' in (run.get('summary') or '')
+    """Hide pre-evidence mock rows and legacy fetch failures from current metrics."""
+    summary = run.get('summary') or ''
+    return 'benchmarked AI responses' in summary or summary.startswith('Live audit unavailable:')
 
 
 def project_for_user(project_id, user_id):
@@ -764,12 +1567,28 @@ def analytics_projects_endpoint():
         projects = []
         for row in project_rows:
             project = dict(row)
-            latest = conn.execute(
+            latest_site = conn.execute(
+                select(
+                    analytics_site_audits.c.id,
+                    analytics_site_audits.c.readiness_score,
+                    analytics_site_audits.c.status,
+                    analytics_site_audits.c.created_at,
+                ).where(analytics_site_audits.c.project_id == project['id'])
+                .order_by(desc(analytics_site_audits.c.created_at)).limit(1)
+            ).mappings().first()
+            latest_legacy = conn.execute(
                 select(analytics_runs.c.id, analytics_runs.c.visibility_score, analytics_runs.c.created_at, analytics_runs.c.summary)
                 .where(analytics_runs.c.project_id == project['id'])
                 .order_by(desc(analytics_runs.c.created_at)).limit(1)
             ).mappings().first()
-            project['latest_run'] = row_to_dict(latest) if latest and not is_legacy_mock_analytics_run(latest) else None
+            if latest_site:
+                project['latest_run'] = {
+                    'id': latest_site['id'], 'visibility_score': latest_site['readiness_score'],
+                    'status': latest_site['status'], 'created_at': to_iso(latest_site['created_at']),
+                    'source_type': 'website_crawl',
+                }
+            else:
+                project['latest_run'] = row_to_dict(latest_legacy) if latest_legacy and not is_legacy_mock_analytics_run(latest_legacy) else None
             projects.append(row_to_dict(project))
     return jsonify({'projects': projects})
 
@@ -783,6 +1602,50 @@ def delete_analytics_project(project_id):
     if not project:
         return jsonify({'error': 'Project not found.'}), 404
     with engine.begin() as conn:
+        audit_ids = [row[0] for row in conn.execute(select(analytics_site_audits.c.id).where(
+            analytics_site_audits.c.project_id == project_id
+        )).all()]
+        if audit_ids:
+            page_ids = [row[0] for row in conn.execute(select(analytics_audit_pages.c.id).where(
+                analytics_audit_pages.c.audit_id.in_(audit_ids)
+            )).all()]
+            if page_ids:
+                conn.execute(analytics_audit_findings.delete().where(analytics_audit_findings.c.page_id.in_(page_ids)))
+            conn.execute(analytics_audit_findings.delete().where(analytics_audit_findings.c.audit_id.in_(audit_ids)))
+            conn.execute(analytics_audit_pages.delete().where(analytics_audit_pages.c.audit_id.in_(audit_ids)))
+            conn.execute(analytics_sitemaps.delete().where(analytics_sitemaps.c.audit_id.in_(audit_ids)))
+            conn.execute(analytics_site_audits.delete().where(analytics_site_audits.c.id.in_(audit_ids)))
+
+        prompt_scan_ids = [row[0] for row in conn.execute(select(analytics_prompt_scan_runs.c.id).where(
+            analytics_prompt_scan_runs.c.project_id == project_id
+        )).all()]
+        if prompt_scan_ids:
+            answer_ids = [row[0] for row in conn.execute(select(analytics_provider_answers.c.id).where(
+                analytics_provider_answers.c.scan_run_id.in_(prompt_scan_ids)
+            )).all()]
+            if answer_ids:
+                conn.execute(analytics_answer_sources.delete().where(analytics_answer_sources.c.answer_id.in_(answer_ids)))
+            conn.execute(analytics_provider_answers.delete().where(analytics_provider_answers.c.scan_run_id.in_(prompt_scan_ids)))
+            conn.execute(analytics_content_opportunities.delete().where(analytics_content_opportunities.c.scan_run_id.in_(prompt_scan_ids)))
+            conn.execute(analytics_prompt_scan_runs.delete().where(analytics_prompt_scan_runs.c.id.in_(prompt_scan_ids)))
+
+        connection = conn.execute(select(gsc_connections.c.id).where(gsc_connections.c.project_id == project_id)).scalar_one_or_none()
+        if connection:
+            sync_ids = [row[0] for row in conn.execute(select(gsc_sync_runs.c.id).where(
+                gsc_sync_runs.c.connection_id == connection
+            )).all()]
+            if sync_ids:
+                conn.execute(gsc_query_rows.delete().where(gsc_query_rows.c.sync_run_id.in_(sync_ids)))
+            conn.execute(gsc_sync_runs.delete().where(gsc_sync_runs.c.connection_id == connection))
+            conn.execute(gsc_properties.delete().where(gsc_properties.c.connection_id == connection))
+            conn.execute(gsc_connections.delete().where(gsc_connections.c.id == connection))
+
+        conn.execute(analytics_topics.delete().where(analytics_topics.c.project_id == project_id))
+        conn.execute(analytics_competitors.delete().where(analytics_competitors.c.project_id == project_id))
+        conn.execute(analytics_tracked_prompts.delete().where(analytics_tracked_prompts.c.project_id == project_id))
+        conn.execute(analytics_scan_schedules.delete().where(analytics_scan_schedules.c.project_id == project_id))
+        conn.execute(analytics_content_opportunities.delete().where(analytics_content_opportunities.c.project_id == project_id))
+        conn.execute(analytics_audit_jobs.delete().where(analytics_audit_jobs.c.project_id == project_id))
         run_ids = [row[0] for row in conn.execute(select(analytics_runs.c.id).where(analytics_runs.c.project_id == project_id)).all()]
         if run_ids:
             conn.execute(analytics_engine_metrics.delete().where(analytics_engine_metrics.c.run_id.in_(run_ids)))
@@ -790,6 +1653,59 @@ def delete_analytics_project(project_id):
         conn.execute(analytics_runs.delete().where(analytics_runs.c.project_id == project_id))
         conn.execute(analytics_projects.delete().where(analytics_projects.c.id == project_id))
     return jsonify({'status': 'success'})
+
+
+@app.route('/api/analytics/projects/<int:project_id>/audits', methods=['POST'])
+def start_site_audit(project_id):
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    project = project_for_user(project_id, user_id)
+    if not project:
+        return jsonify({'error': 'Project not found.'}), 404
+    with engine.connect() as conn:
+        active = conn.execute(select(analytics_audit_jobs).where(
+            (analytics_audit_jobs.c.project_id == project_id) &
+            (analytics_audit_jobs.c.job_type == 'site_audit') &
+            (analytics_audit_jobs.c.status.in_(['queued', 'running']))
+        ).order_by(desc(analytics_audit_jobs.c.created_at)).limit(1)).mappings().first()
+    if active:
+        return jsonify({'status': 'accepted', 'job': row_to_dict(active)}), 202
+    job_id = create_analytics_job(project, user_id, 'site_audit')
+    start_background_analytics_job(job_id, run_site_audit_job)
+    return jsonify({'status': 'accepted', 'job_id': job_id}), 202
+
+
+@app.route('/api/analytics/jobs/<int:job_id>', methods=['GET'])
+def analytics_job_status(job_id):
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    job = analytics_job_for_user(job_id, user_id)
+    if not job:
+        return jsonify({'error': 'Analytics job not found.'}), 404
+    return jsonify({'job': job})
+
+
+@app.route('/api/analytics/projects/<int:project_id>/audit', methods=['GET'])
+def site_audit_report_endpoint(project_id):
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    project = project_for_user(project_id, user_id)
+    if not project:
+        return jsonify({'error': 'Project not found.'}), 404
+    audit = latest_site_audit(project_id)
+    with engine.connect() as conn:
+        active_job = conn.execute(select(analytics_audit_jobs).where(
+            (analytics_audit_jobs.c.project_id == project_id) &
+            (analytics_audit_jobs.c.job_type == 'site_audit') &
+            (analytics_audit_jobs.c.status.in_(['queued', 'running']))
+        ).order_by(desc(analytics_audit_jobs.c.created_at)).limit(1)).mappings().first()
+    return jsonify({
+        'project': row_to_dict(project), 'audit': audit,
+        'active_job': row_to_dict(active_job) if active_job else None,
+    })
 
 
 @app.route('/api/analytics/projects/<int:project_id>/scan', methods=['POST'])
@@ -823,23 +1739,59 @@ def analytics_report(project_id, user_id):
     project = project_for_user(project_id, user_id)
     if not project:
         return None
+    site_audit = latest_site_audit(project_id)
+    if site_audit:
+        audit_run = site_audit['run']
+        compatibility_run = {
+            'id': audit_run['id'], 'project_id': project_id,
+            'visibility_score': audit_run['readiness_score'],
+            'mention_rate': audit_run['metadata_score'],
+            'citation_rate': audit_run['content_score'],
+            'share_of_voice': audit_run['crawlability_score'],
+            'summary': audit_run['summary'], 'status': audit_run['status'],
+            'created_at': audit_run['created_at'], 'source_type': 'website_crawl',
+        }
+        compatibility_engines = [
+            {'engine': 'Metadata', 'visibility_score': audit_run['metadata_score'], 'mention_rate': audit_run['metadata_score'], 'citations': 0, 'change': 0},
+            {'engine': 'Content', 'visibility_score': audit_run['content_score'], 'mention_rate': audit_run['content_score'], 'citations': 0, 'change': 0},
+            {'engine': 'Crawlability', 'visibility_score': audit_run['crawlability_score'], 'mention_rate': audit_run['crawlability_score'], 'citations': 0, 'change': 0},
+            {'engine': 'Structured data', 'visibility_score': audit_run['structured_data_score'], 'mention_rate': audit_run['structured_data_score'], 'citations': 0, 'change': 0},
+        ]
+        compatibility_prompts = [
+            {
+                'prompt': finding['code'].replace('_', ' ').title(), 'intent': finding['area'],
+                'position': 0, 'cited': finding['severity'].title(),
+                'leading_brand': finding['evidence'], 'opportunity': finding['recommendation'],
+            }
+            for finding in site_audit['findings'][:20]
+        ]
+        compatibility_history = [
+            {'visibility_score': item['readiness_score'], 'created_at': item['created_at'], 'status': item['status']}
+            for item in site_audit['history']
+        ]
+        return {
+            'project': row_to_dict(project), 'run': compatibility_run,
+            'engines': compatibility_engines, 'prompts': compatibility_prompts,
+            'history': compatibility_history, 'audit': site_audit,
+        }
     with engine.connect() as conn:
         run = conn.execute(select(analytics_runs).where(analytics_runs.c.project_id == project_id)
             .order_by(desc(analytics_runs.c.created_at)).limit(1)).mappings().first()
         if not run:
-            return {'project': row_to_dict(project), 'run': None, 'engines': [], 'prompts': [], 'history': []}
+            return {'project': row_to_dict(project), 'run': None, 'engines': [], 'prompts': [], 'history': [], 'audit': None}
         run = dict(run)
         if is_legacy_mock_analytics_run(run):
-            return {'project': row_to_dict(project), 'run': None, 'engines': [], 'prompts': [], 'history': []}
+            return {'project': row_to_dict(project), 'run': None, 'engines': [], 'prompts': [], 'history': [], 'audit': None}
         engines = [dict(row) for row in conn.execute(select(analytics_engine_metrics).where(
             analytics_engine_metrics.c.run_id == run['id']).order_by(desc(analytics_engine_metrics.c.visibility_score))).mappings().all()]
         prompts = [dict(row) for row in conn.execute(select(analytics_prompts).where(
             analytics_prompts.c.run_id == run['id']).order_by(analytics_prompts.c.position)).mappings().all()]
         history_rows = conn.execute(select(
             analytics_runs.c.visibility_score, analytics_runs.c.created_at, analytics_runs.c.summary
-        ).where(analytics_runs.c.project_id == project_id).order_by(analytics_runs.c.created_at).limit(12)).mappings().all()
+        ).where(analytics_runs.c.project_id == project_id).order_by(desc(analytics_runs.c.created_at)).limit(12)).mappings().all()
         history = [row_to_dict(row) for row in history_rows if not is_legacy_mock_analytics_run(row)]
-    return {'project': row_to_dict(project), 'run': row_to_dict(run), 'engines': engines, 'prompts': prompts, 'history': history}
+    history.reverse()
+    return {'project': row_to_dict(project), 'run': row_to_dict(run), 'engines': engines, 'prompts': prompts, 'history': history, 'audit': None}
 
 
 @app.route('/api/analytics/projects/<int:project_id>/report', methods=['GET'])
@@ -851,6 +1803,1334 @@ def analytics_report_endpoint(project_id):
     if not report:
         return jsonify({'error': 'Project not found.'}), 404
     return jsonify(report)
+
+
+class ProviderAPIError(RuntimeError):
+    def __init__(self, message, status=None, payload=None):
+        super().__init__(message)
+        self.status = status
+        self.payload = payload
+
+
+def external_json_request(url, *, method='GET', payload=None, form=None, headers=None, timeout=30):
+    """Call a fixed third-party API without ever exposing its credential to the browser."""
+    request_headers = {'Accept': 'application/json', **(headers or {})}
+    body = None
+    if payload is not None:
+        request_headers['Content-Type'] = 'application/json'
+        body = json.dumps(payload).encode('utf-8')
+    elif form is not None:
+        request_headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        body = urlencode(form).encode('utf-8')
+    api_request = Request(url, data=body, headers=request_headers, method=method)
+    try:
+        with verified_http_opener().open(api_request, timeout=timeout) as response:
+            raw = response.read(5_000_001)
+            if len(raw) > 5_000_000:
+                raise ProviderAPIError('The provider response exceeded the safe size limit.')
+            return json.loads(raw.decode('utf-8')) if raw else {}
+    except HTTPError as error:
+        raw = error.read(200_000).decode('utf-8', errors='replace')
+        try:
+            error_payload = json.loads(raw)
+        except json.JSONDecodeError:
+            error_payload = {'message': raw}
+        nested_error = error_payload.get('error')
+        nested_message = nested_error.get('message') if isinstance(nested_error, dict) else None
+        message = error_payload.get('error_description') or nested_message or error_payload.get('message')
+        if not message and isinstance(nested_error, str):
+            message = nested_error
+        message = message or f'Provider returned HTTP {error.code}.'
+        raise ProviderAPIError(str(message), status=error.code, payload=error_payload) from error
+    except (URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
+        raise ProviderAPIError(f'Provider request failed: {error}') from error
+
+
+def oauth_token_cipher():
+    key = os.environ.get('OAUTH_TOKEN_ENCRYPTION_KEY')
+    if not key:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+        return Fernet(key.encode('utf-8'))
+    except (ImportError, ValueError) as error:
+        raise RuntimeError('OAUTH_TOKEN_ENCRYPTION_KEY must be a valid Fernet key.') from error
+
+
+def encrypt_oauth_token(token):
+    if not token:
+        return None
+    cipher = oauth_token_cipher()
+    if not cipher:
+        raise RuntimeError('OAuth token encryption is not configured.')
+    return cipher.encrypt(token.encode('utf-8')).decode('utf-8')
+
+
+def decrypt_oauth_token(token):
+    if not token:
+        return None
+    cipher = oauth_token_cipher()
+    if not cipher:
+        raise RuntimeError('OAuth token encryption is not configured.')
+    try:
+        return cipher.decrypt(token.encode('utf-8')).decode('utf-8')
+    except Exception as error:
+        raise RuntimeError('The stored OAuth token could not be decrypted.') from error
+
+
+GOOGLE_WEBMASTERS_SCOPE = 'https://www.googleapis.com/auth/webmasters.readonly'
+
+
+def google_search_console_configured():
+    has_settings = bool(
+        os.environ.get('GOOGLE_CLIENT_ID') and
+        os.environ.get('GOOGLE_CLIENT_SECRET') and
+        os.environ.get('OAUTH_TOKEN_ENCRYPTION_KEY')
+    )
+    if not has_settings:
+        return False
+    try:
+        return oauth_token_cipher() is not None
+    except RuntimeError:
+        return False
+
+
+def gsc_connection_for_project(project_id, user_id):
+    with engine.connect() as conn:
+        row = conn.execute(select(gsc_connections).where(
+            (gsc_connections.c.project_id == project_id) & (gsc_connections.c.user_id == user_id)
+        )).mappings().first()
+    return dict(row) if row else None
+
+
+def google_redirect_uri():
+    return os.environ.get('GOOGLE_OAUTH_REDIRECT_URI') or request.url_root.rstrip('/') + '/api/analytics/integrations/google/callback'
+
+
+def refresh_google_access_token(connection):
+    expires_at = connection.get('token_expires_at')
+    if connection.get('encrypted_access_token') and expires_at and expires_at > datetime.utcnow() + timedelta(minutes=5):
+        return decrypt_oauth_token(connection['encrypted_access_token'])
+    refresh_token = decrypt_oauth_token(connection.get('encrypted_refresh_token'))
+    if not refresh_token:
+        raise ProviderAPIError('Google authorization has no refresh token. Reconnect Search Console.')
+    token_payload = external_json_request(
+        'https://oauth2.googleapis.com/token', method='POST', form={
+            'client_id': os.environ['GOOGLE_CLIENT_ID'],
+            'client_secret': os.environ['GOOGLE_CLIENT_SECRET'],
+            'refresh_token': refresh_token,
+            'grant_type': 'refresh_token',
+        },
+    )
+    access_token = token_payload.get('access_token')
+    if not access_token:
+        raise ProviderAPIError('Google did not return an access token.')
+    expires = datetime.utcnow() + timedelta(seconds=max(int(token_payload.get('expires_in', 3600)) - 30, 60))
+    with engine.begin() as conn:
+        conn.execute(update(gsc_connections).where(gsc_connections.c.id == connection['id']).values(
+            encrypted_access_token=encrypt_oauth_token(access_token), token_expires_at=expires,
+            status='connected', last_error=None, updated_at=datetime.utcnow(),
+        ))
+    return access_token
+
+
+def gsc_report(project_id, user_id):
+    connection = gsc_connection_for_project(project_id, user_id)
+    if not connection:
+        return {
+            'configured': google_search_console_configured(), 'status': 'disconnected',
+            'property': None, 'properties': [], 'last_sync': None, 'metrics': None, 'queries': [],
+        }
+    with engine.connect() as conn:
+        properties = [row_to_dict(row) for row in conn.execute(select(gsc_properties).where(
+            gsc_properties.c.connection_id == connection['id']
+        ).order_by(desc(gsc_properties.c.selected), gsc_properties.c.site_url)).mappings().all()]
+        sync = conn.execute(select(gsc_sync_runs).where(
+            gsc_sync_runs.c.connection_id == connection['id']
+        ).order_by(desc(gsc_sync_runs.c.created_at)).limit(1)).mappings().first()
+        rows = []
+        metric_rows = []
+        if sync and sync['status'] == 'succeeded':
+            rows = [row_to_dict(row) for row in conn.execute(select(gsc_query_rows).where(
+                gsc_query_rows.c.sync_run_id == sync['id']
+            ).order_by(desc(gsc_query_rows.c.clicks), desc(gsc_query_rows.c.impressions)).limit(100)).mappings().all()]
+            metric_rows = conn.execute(select(
+                gsc_query_rows.c.clicks, gsc_query_rows.c.impressions, gsc_query_rows.c.position,
+            ).where(gsc_query_rows.c.sync_run_id == sync['id'])).mappings().all()
+    metrics = None
+    if metric_rows:
+        clicks = sum(float(row['clicks']) for row in metric_rows)
+        impressions = sum(float(row['impressions']) for row in metric_rows)
+        weighted_position = sum(float(row['position']) * float(row['impressions']) for row in metric_rows)
+        metrics = {
+            'clicks': round(clicks, 2), 'impressions': round(impressions, 2),
+            'ctr': round(clicks / impressions * 100, 2) if impressions else 0,
+            'position': round(weighted_position / impressions, 2) if impressions else None,
+            'rows_in_view': len(rows), 'rows_saved': len(metric_rows),
+        }
+    return {
+        'configured': google_search_console_configured(), 'status': connection['status'],
+        'property': connection.get('selected_property'), 'properties': properties,
+        'last_error': connection.get('last_error'),
+        'last_sync': row_to_dict(sync) if sync else None, 'metrics': metrics, 'queries': rows,
+    }
+
+
+@app.route('/api/analytics/integrations/google/start', methods=['GET'])
+def start_google_search_console_oauth():
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    try:
+        project_id = int(request.args.get('project_id', ''))
+    except ValueError:
+        return jsonify({'error': 'A valid project_id is required.'}), 400
+    if not project_for_user(project_id, user_id):
+        return jsonify({'error': 'Project not found.'}), 404
+    if not google_search_console_configured():
+        return jsonify({'error': 'Google Search Console is not configured on this server.'}), 503
+    try:
+        oauth_token_cipher()
+    except RuntimeError as error:
+        return jsonify({'error': str(error)}), 503
+    state = secrets.token_urlsafe(32)
+    session['gsc_oauth_state'] = state
+    session['gsc_oauth_project_id'] = project_id
+    params = {
+        'client_id': os.environ['GOOGLE_CLIENT_ID'], 'redirect_uri': google_redirect_uri(),
+        'response_type': 'code', 'scope': GOOGLE_WEBMASTERS_SCOPE,
+        'access_type': 'offline', 'include_granted_scopes': 'true', 'prompt': 'consent',
+        'state': state,
+    }
+    return redirect('https://accounts.google.com/o/oauth2/v2/auth?' + urlencode(params))
+
+
+@app.route('/api/analytics/integrations/google/callback', methods=['GET'])
+def google_search_console_oauth_callback():
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    expected_state = session.pop('gsc_oauth_state', None)
+    project_id = session.pop('gsc_oauth_project_id', None)
+    if not expected_state or not secrets.compare_digest(request.args.get('state', ''), expected_state):
+        return jsonify({'error': 'Google OAuth state validation failed.'}), 400
+    project = project_for_user(project_id, user_id)
+    if not project:
+        return jsonify({'error': 'Project not found.'}), 404
+    if request.args.get('error'):
+        return redirect(f'/analytics?project={project_id}&gsc=denied')
+    code = request.args.get('code')
+    if not code:
+        return jsonify({'error': 'Google did not return an authorization code.'}), 400
+    try:
+        token_payload = external_json_request(
+            'https://oauth2.googleapis.com/token', method='POST', form={
+                'code': code, 'client_id': os.environ['GOOGLE_CLIENT_ID'],
+                'client_secret': os.environ['GOOGLE_CLIENT_SECRET'],
+                'redirect_uri': google_redirect_uri(), 'grant_type': 'authorization_code',
+            },
+        )
+        access_token = token_payload.get('access_token')
+        if not access_token:
+            raise ProviderAPIError('Google did not return an access token.')
+        site_payload = external_json_request(
+            'https://www.googleapis.com/webmasters/v3/sites',
+            headers={'Authorization': f'Bearer {access_token}'},
+        )
+        sites = site_payload.get('siteEntry') or []
+        now = datetime.utcnow()
+        existing = gsc_connection_for_project(project_id, user_id)
+        refresh_token = token_payload.get('refresh_token')
+        encrypted_refresh = encrypt_oauth_token(refresh_token) if refresh_token else (existing or {}).get('encrypted_refresh_token')
+        if not encrypted_refresh:
+            raise ProviderAPIError('Google did not return offline access. Reconnect and approve consent.')
+        selected_property = None
+        for site in sites:
+            site_url = site.get('siteUrl') or ''
+            site_domain = normalise_domain(site_url.replace('sc-domain:', ''))
+            if site_domain == project['domain']:
+                selected_property = site_url
+                break
+        if not selected_property and len(sites) == 1:
+            selected_property = sites[0].get('siteUrl')
+        expires = now + timedelta(seconds=max(int(token_payload.get('expires_in', 3600)) - 30, 60))
+        with engine.begin() as conn:
+            values = dict(
+                user_id=user_id, encrypted_refresh_token=encrypted_refresh,
+                encrypted_access_token=encrypt_oauth_token(access_token), token_expires_at=expires,
+                granted_scopes=token_payload.get('scope') or GOOGLE_WEBMASTERS_SCOPE,
+                selected_property=selected_property, status='connected', last_error=None, updated_at=now,
+            )
+            if existing:
+                conn.execute(update(gsc_connections).where(gsc_connections.c.id == existing['id']).values(**values))
+                connection_id = existing['id']
+                conn.execute(gsc_properties.delete().where(gsc_properties.c.connection_id == connection_id))
+            else:
+                result = conn.execute(insert(gsc_connections).values(
+                    project_id=project_id, created_at=now, **values,
+                ))
+                connection_id = result.inserted_primary_key[0]
+            for site in sites:
+                site_url = (site.get('siteUrl') or '')[:2048]
+                if site_url:
+                    conn.execute(insert(gsc_properties).values(
+                        connection_id=connection_id, site_url=site_url,
+                        permission_level=(site.get('permissionLevel') or 'unknown')[:80],
+                        selected=site_url == selected_property,
+                    ))
+        return redirect(f'/analytics?project={project_id}&gsc=connected')
+    except (ProviderAPIError, RuntimeError) as error:
+        return redirect(f'/analytics?project={project_id}&gsc=error&message={quote(str(error)[:180])}')
+
+
+@app.route('/api/analytics/projects/<int:project_id>/search-console', methods=['GET', 'DELETE'])
+def search_console_connection_endpoint(project_id):
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    if not project_for_user(project_id, user_id):
+        return jsonify({'error': 'Project not found.'}), 404
+    if request.method == 'DELETE':
+        connection = gsc_connection_for_project(project_id, user_id)
+        if connection:
+            with engine.begin() as conn:
+                sync_ids = [row[0] for row in conn.execute(select(gsc_sync_runs.c.id).where(
+                    gsc_sync_runs.c.connection_id == connection['id']
+                )).all()]
+                if sync_ids:
+                    conn.execute(gsc_query_rows.delete().where(gsc_query_rows.c.sync_run_id.in_(sync_ids)))
+                conn.execute(gsc_sync_runs.delete().where(gsc_sync_runs.c.connection_id == connection['id']))
+                conn.execute(gsc_properties.delete().where(gsc_properties.c.connection_id == connection['id']))
+                conn.execute(gsc_connections.delete().where(gsc_connections.c.id == connection['id']))
+        return jsonify({'status': 'disconnected'})
+    return jsonify({'search_console': gsc_report(project_id, user_id)})
+
+
+@app.route('/api/analytics/projects/<int:project_id>/search-console/property', methods=['PUT'])
+def select_search_console_property(project_id):
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    connection = gsc_connection_for_project(project_id, user_id)
+    if not connection:
+        return jsonify({'error': 'Connect Google Search Console first.'}), 409
+    site_url = ((request.get_json(silent=True) or {}).get('site_url') or '').strip()
+    with engine.connect() as conn:
+        allowed = conn.execute(select(gsc_properties.c.id).where(
+            (gsc_properties.c.connection_id == connection['id']) & (gsc_properties.c.site_url == site_url)
+        )).scalar_one_or_none()
+    if not allowed:
+        return jsonify({'error': 'Select a property returned by Google Search Console.'}), 400
+    with engine.begin() as conn:
+        conn.execute(update(gsc_properties).where(gsc_properties.c.connection_id == connection['id']).values(selected=False))
+        conn.execute(update(gsc_properties).where(gsc_properties.c.id == allowed).values(selected=True))
+        conn.execute(update(gsc_connections).where(gsc_connections.c.id == connection['id']).values(
+            selected_property=site_url, updated_at=datetime.utcnow(),
+        ))
+    return jsonify({'search_console': gsc_report(project_id, user_id)})
+
+
+@app.route('/api/analytics/projects/<int:project_id>/search-console/sync', methods=['POST'])
+def sync_search_console(project_id):
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return auth_error
+    connection = gsc_connection_for_project(project_id, user_id)
+    if not connection:
+        return jsonify({'error': 'Connect Google Search Console first.'}), 409
+    property_url = connection.get('selected_property')
+    if not property_url:
+        return jsonify({'error': 'Choose a Search Console property first.'}), 409
+    body = request.get_json(silent=True) or {}
+    end_day = date.today() - timedelta(days=3)
+    start_day = end_day - timedelta(days=27)
+    try:
+        requested_start = date.fromisoformat(body.get('start_date')) if body.get('start_date') else start_day
+        requested_end = date.fromisoformat(body.get('end_date')) if body.get('end_date') else end_day
+    except ValueError:
+        return jsonify({'error': 'Search Console dates must use YYYY-MM-DD.'}), 400
+    if requested_end < requested_start or (requested_end - requested_start).days > 365:
+        return jsonify({'error': 'Choose a valid date range of at most 366 days.'}), 400
+    now = datetime.utcnow()
+    with engine.begin() as conn:
+        result = conn.execute(insert(gsc_sync_runs).values(
+            project_id=project_id, connection_id=connection['id'], property_url=property_url,
+            status='running', start_date=requested_start.isoformat(), end_date=requested_end.isoformat(),
+            rows_saved=0, data_state='final', error=None, created_at=now, completed_at=None,
+        ))
+        sync_id = result.inserted_primary_key[0]
+    try:
+        access_token = refresh_google_access_token(connection)
+        row_limit = max(1, min(int(os.environ.get('GSC_ROW_LIMIT', '2500')), 25_000))
+        payload = external_json_request(
+            f"https://www.googleapis.com/webmasters/v3/sites/{quote(property_url, safe='')}/searchAnalytics/query",
+            method='POST', headers={'Authorization': f'Bearer {access_token}'}, payload={
+                'startDate': requested_start.isoformat(), 'endDate': requested_end.isoformat(),
+                'dimensions': ['query', 'page'], 'type': 'web', 'aggregationType': 'auto',
+                'rowLimit': row_limit, 'startRow': 0, 'dataState': 'final',
+            }, timeout=45,
+        )
+        query_rows = []
+        for row in payload.get('rows') or []:
+            keys = row.get('keys') or []
+            query_rows.append({
+                'sync_run_id': sync_id, 'query': (keys[0] if keys else '(unknown)')[:2000],
+                'page': (keys[1] if len(keys) > 1 else None),
+                'clicks': float(row.get('clicks', 0)), 'impressions': float(row.get('impressions', 0)),
+                'ctr': float(row.get('ctr', 0)), 'position': float(row.get('position', 0)),
+            })
+        with engine.begin() as conn:
+            if query_rows:
+                conn.execute(insert(gsc_query_rows), query_rows)
+            conn.execute(update(gsc_sync_runs).where(gsc_sync_runs.c.id == sync_id).values(
+                status='succeeded', rows_saved=len(query_rows), completed_at=datetime.utcnow(),
+            ))
+            conn.execute(update(gsc_connections).where(gsc_connections.c.id == connection['id']).values(
+                status='connected', last_error=None, updated_at=datetime.utcnow(),
+            ))
+        return jsonify({'status': 'success', 'search_console': gsc_report(project_id, user_id)})
+    except (ProviderAPIError, RuntimeError) as error:
+        with engine.begin() as conn:
+            conn.execute(update(gsc_sync_runs).where(gsc_sync_runs.c.id == sync_id).values(
+                status='failed', error=str(error)[:2000], completed_at=datetime.utcnow(),
+            ))
+            conn.execute(update(gsc_connections).where(gsc_connections.c.id == connection['id']).values(
+                status='error', last_error=str(error)[:2000], updated_at=datetime.utcnow(),
+            ))
+        return jsonify({'error': str(error), 'search_console': gsc_report(project_id, user_id)}), 502
+
+
+def analytics_tracking_payload(project_id):
+    with engine.connect() as conn:
+        topics = [row_to_dict(row) for row in conn.execute(select(analytics_topics).where(
+            analytics_topics.c.project_id == project_id
+        ).order_by(analytics_topics.c.name)).mappings().all()]
+        competitors = [row_to_dict(row) for row in conn.execute(select(analytics_competitors).where(
+            analytics_competitors.c.project_id == project_id
+        ).order_by(analytics_competitors.c.name)).mappings().all()]
+        prompt_rows = conn.execute(select(
+            analytics_tracked_prompts,
+            analytics_topics.c.name.label('topic_name'),
+        ).outerjoin(
+            analytics_topics, analytics_tracked_prompts.c.topic_id == analytics_topics.c.id
+        ).where(analytics_tracked_prompts.c.project_id == project_id)
+            .order_by(desc(analytics_tracked_prompts.c.active), analytics_tracked_prompts.c.created_at)).mappings().all()
+        prompts = [row_to_dict(row) for row in prompt_rows]
+        schedule = conn.execute(select(analytics_scan_schedules).where(
+            analytics_scan_schedules.c.project_id == project_id
+        )).mappings().first()
+    open_model = open_model_settings()
+    return {
+        'topics': topics, 'competitors': competitors, 'prompts': prompts,
+        'schedule': row_to_dict(schedule) if schedule else None,
+        'providers': {
+            'perplexity': {
+                'configured': bool(os.environ.get('PERPLEXITY_API_KEY')),
+                'model': f"Agent preset: {os.environ.get('PERPLEXITY_AGENT_PRESET', 'low')}",
+            },
+            'open_model': {
+                'configured': open_model['configured'],
+                'provider': open_model['provider'],
+                'model': open_model['model'],
+                'purpose': 'Evidence-grounded opportunity summaries only',
+            },
+        },
+    }
+
+
+def ensure_project_owner(project_id):
+    user_id, auth_error = analytics_user_id()
+    if auth_error:
+        return None, None, auth_error
+    project = project_for_user(project_id, user_id)
+    if not project:
+        return user_id, None, (jsonify({'error': 'Project not found.'}), 404)
+    return user_id, project, None
+
+
+@app.route('/api/analytics/projects/<int:project_id>/tracking', methods=['GET'])
+def analytics_tracking_endpoint(project_id):
+    _user_id, project, error = ensure_project_owner(project_id)
+    if error:
+        return error
+    return jsonify({'project': row_to_dict(project), 'tracking': analytics_tracking_payload(project_id)})
+
+
+@app.route('/api/analytics/projects/<int:project_id>/topics', methods=['POST'])
+def create_analytics_topic(project_id):
+    _user_id, _project, error = ensure_project_owner(project_id)
+    if error:
+        return error
+    name = ((request.get_json(silent=True) or {}).get('name') or '').strip()
+    if not name or len(name) > 180:
+        return jsonify({'error': 'Enter a topic between 1 and 180 characters.'}), 400
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(insert(analytics_topics).values(
+                project_id=project_id, name=name, created_at=datetime.utcnow(),
+            ))
+    except IntegrityError:
+        return jsonify({'error': 'That topic is already tracked.'}), 409
+    with engine.connect() as conn:
+        row = conn.execute(select(analytics_topics).where(analytics_topics.c.id == result.inserted_primary_key[0])).mappings().first()
+    return jsonify({'topic': row_to_dict(row)}), 201
+
+
+@app.route('/api/analytics/projects/<int:project_id>/topics/<int:topic_id>', methods=['DELETE'])
+def delete_analytics_topic(project_id, topic_id):
+    _user_id, _project, error = ensure_project_owner(project_id)
+    if error:
+        return error
+    with engine.begin() as conn:
+        exists = conn.execute(select(analytics_topics.c.id).where(
+            (analytics_topics.c.id == topic_id) & (analytics_topics.c.project_id == project_id)
+        )).scalar_one_or_none()
+        if not exists:
+            return jsonify({'error': 'Topic not found.'}), 404
+        conn.execute(update(analytics_tracked_prompts).where(
+            analytics_tracked_prompts.c.topic_id == topic_id
+        ).values(topic_id=None, updated_at=datetime.utcnow()))
+        conn.execute(analytics_topics.delete().where(analytics_topics.c.id == topic_id))
+    return jsonify({'status': 'success'})
+
+
+@app.route('/api/analytics/projects/<int:project_id>/competitors', methods=['POST'])
+def create_analytics_competitor(project_id):
+    _user_id, _project, error = ensure_project_owner(project_id)
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    name = (data.get('name') or '').strip()
+    domain_value = (data.get('domain') or '').strip()
+    domain = normalise_domain(domain_value) if domain_value else None
+    if not name or len(name) > 180:
+        return jsonify({'error': 'Enter a competitor name between 1 and 180 characters.'}), 400
+    if domain_value and not domain:
+        return jsonify({'error': 'Enter a valid competitor domain or leave it blank.'}), 400
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(insert(analytics_competitors).values(
+                project_id=project_id, name=name, domain=domain, created_at=datetime.utcnow(),
+            ))
+    except IntegrityError:
+        return jsonify({'error': 'That competitor is already tracked.'}), 409
+    with engine.connect() as conn:
+        row = conn.execute(select(analytics_competitors).where(
+            analytics_competitors.c.id == result.inserted_primary_key[0]
+        )).mappings().first()
+    return jsonify({'competitor': row_to_dict(row)}), 201
+
+
+@app.route('/api/analytics/projects/<int:project_id>/competitors/<int:competitor_id>', methods=['DELETE'])
+def delete_analytics_competitor(project_id, competitor_id):
+    _user_id, _project, error = ensure_project_owner(project_id)
+    if error:
+        return error
+    with engine.begin() as conn:
+        result = conn.execute(analytics_competitors.delete().where(
+            (analytics_competitors.c.id == competitor_id) &
+            (analytics_competitors.c.project_id == project_id)
+        ))
+    if not result.rowcount:
+        return jsonify({'error': 'Competitor not found.'}), 404
+    return jsonify({'status': 'success'})
+
+
+@app.route('/api/analytics/projects/<int:project_id>/tracked-prompts', methods=['POST'])
+def create_analytics_tracked_prompt(project_id):
+    _user_id, _project, error = ensure_project_owner(project_id)
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    prompt = (data.get('prompt') or '').strip()
+    intent = (data.get('intent') or 'Discovery').strip()[:80] or 'Discovery'
+    try:
+        topic_id = int(data['topic_id']) if data.get('topic_id') else None
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Choose a valid topic.'}), 400
+    if len(prompt) < 8 or len(prompt) > 1000:
+        return jsonify({'error': 'Enter a prompt between 8 and 1,000 characters.'}), 400
+    if topic_id:
+        with engine.connect() as conn:
+            topic = conn.execute(select(analytics_topics.c.id).where(
+                (analytics_topics.c.id == topic_id) & (analytics_topics.c.project_id == project_id)
+            )).scalar_one_or_none()
+        if not topic:
+            return jsonify({'error': 'The selected topic does not belong to this project.'}), 400
+    now = datetime.utcnow()
+    with engine.begin() as conn:
+        prompt_count = conn.execute(select(func.count()).select_from(analytics_tracked_prompts).where(
+            analytics_tracked_prompts.c.project_id == project_id
+        )).scalar_one()
+        if prompt_count >= ANALYTICS_MAX_TRACKED_PROMPTS:
+            return jsonify({'error': f'This project has reached its {ANALYTICS_MAX_TRACKED_PROMPTS}-prompt storage limit.'}), 409
+        result = conn.execute(insert(analytics_tracked_prompts).values(
+            project_id=project_id, topic_id=topic_id, prompt=prompt, intent=intent,
+            active=True, created_at=now, updated_at=now,
+        ))
+    return jsonify({'prompt_id': result.inserted_primary_key[0]}), 201
+
+
+@app.route('/api/analytics/projects/<int:project_id>/tracked-prompts/<int:prompt_id>', methods=['PATCH', 'DELETE'])
+def update_analytics_tracked_prompt(project_id, prompt_id):
+    _user_id, _project, error = ensure_project_owner(project_id)
+    if error:
+        return error
+    with engine.connect() as conn:
+        prompt = conn.execute(select(analytics_tracked_prompts).where(
+            (analytics_tracked_prompts.c.id == prompt_id) &
+            (analytics_tracked_prompts.c.project_id == project_id)
+        )).mappings().first()
+    if not prompt:
+        return jsonify({'error': 'Prompt not found.'}), 404
+    if request.method == 'DELETE':
+        with engine.begin() as conn:
+            conn.execute(analytics_tracked_prompts.delete().where(analytics_tracked_prompts.c.id == prompt_id))
+        return jsonify({'status': 'success'})
+    data = request.get_json(silent=True) or {}
+    values = {'updated_at': datetime.utcnow()}
+    if 'active' in data:
+        values['active'] = bool(data['active'])
+    if 'prompt' in data:
+        prompt_text = (data.get('prompt') or '').strip()
+        if len(prompt_text) < 8 or len(prompt_text) > 1000:
+            return jsonify({'error': 'Enter a prompt between 8 and 1,000 characters.'}), 400
+        values['prompt'] = prompt_text
+    with engine.begin() as conn:
+        conn.execute(update(analytics_tracked_prompts).where(analytics_tracked_prompts.c.id == prompt_id).values(**values))
+    return jsonify({'status': 'success'})
+
+
+def next_schedule_time(frequency, from_time=None):
+    from_time = from_time or datetime.utcnow()
+    return from_time + {'daily': timedelta(days=1), 'weekly': timedelta(days=7), 'monthly': timedelta(days=30)}[frequency]
+
+
+@app.route('/api/analytics/projects/<int:project_id>/scan-schedule', methods=['PUT'])
+def update_analytics_scan_schedule(project_id):
+    _user_id, _project, error = ensure_project_owner(project_id)
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    enabled = bool(data.get('enabled'))
+    frequency = (data.get('frequency') or 'weekly').lower()
+    region = (data.get('region') or '').strip().upper()[:2] or None
+    if frequency not in {'daily', 'weekly', 'monthly'}:
+        return jsonify({'error': 'Frequency must be daily, weekly, or monthly.'}), 400
+    if region and not re.fullmatch(r'[A-Z]{2}', region):
+        return jsonify({'error': 'Region must be a two-letter country code.'}), 400
+    now = datetime.utcnow()
+    with engine.begin() as conn:
+        existing = conn.execute(select(analytics_scan_schedules.c.id).where(
+            analytics_scan_schedules.c.project_id == project_id
+        )).scalar_one_or_none()
+        values = dict(
+            enabled=enabled, frequency=frequency, region=region,
+            next_run_at=next_schedule_time(frequency, now) if enabled else None,
+            updated_at=now,
+        )
+        if existing:
+            conn.execute(update(analytics_scan_schedules).where(analytics_scan_schedules.c.id == existing).values(**values))
+        else:
+            conn.execute(insert(analytics_scan_schedules).values(
+                project_id=project_id, last_run_at=None, created_at=now, **values,
+            ))
+    return jsonify({'tracking': analytics_tracking_payload(project_id)})
+
+
+def evidence_url(value):
+    value = (value or '').strip()
+    parsed = urlparse(value)
+    if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+        return None
+    return parsed._replace(fragment='').geturl()[:2048]
+
+
+def domain_matches(candidate_url, tracked_domain):
+    candidate_domain = normalise_domain(candidate_url)
+    tracked = normalise_site_host(tracked_domain)
+    return bool(candidate_domain and (
+        normalise_site_host(candidate_domain) == tracked or
+        normalise_site_host(candidate_domain).endswith('.' + tracked)
+    ))
+
+
+def text_mentions_alias(text_value, aliases):
+    text_value = text_value or ''
+    for alias in aliases:
+        alias = (alias or '').strip()
+        if len(alias) < 2:
+            continue
+        if re.search(rf'(?<![\w]){re.escape(alias)}(?![\w])', text_value, flags=re.I):
+            return True
+    return False
+
+
+def project_brand_aliases(project):
+    domain_label = project['domain'].split('.')[0].replace('-', ' ')
+    return list(dict.fromkeys([project['brand_name'], project['domain'], domain_label]))
+
+
+def call_perplexity_search(prompt, region=None):
+    api_key = os.environ.get('PERPLEXITY_API_KEY')
+    if not api_key:
+        raise ProviderAPIError('PERPLEXITY_API_KEY is not configured.')
+    max_results = max(1, min(int(os.environ.get('PERPLEXITY_MAX_RESULTS', '10')), 20))
+    payload = {
+        'query': prompt, 'max_results': max_results,
+        'search_context_size': os.environ.get('PERPLEXITY_SEARCH_CONTEXT', 'medium'),
+    }
+    if region and re.fullmatch(r'[A-Z]{2}', region):
+        payload['country'] = region
+    return external_json_request(
+        'https://api.perplexity.ai/search', method='POST', payload=payload,
+        headers={'Authorization': f'Bearer {api_key}'}, timeout=45,
+    )
+
+
+def call_perplexity_answer(prompt):
+    api_key = os.environ.get('PERPLEXITY_API_KEY')
+    if not api_key:
+        raise ProviderAPIError('PERPLEXITY_API_KEY is not configured.')
+    payload = external_json_request(
+        'https://api.perplexity.ai/v1/agent', method='POST',
+        headers={'Authorization': f'Bearer {api_key}'}, timeout=60,
+        payload={
+            'preset': os.environ.get('PERPLEXITY_AGENT_PRESET', 'low'),
+            'input': prompt,
+            'tools': [{'type': 'web_search'}],
+            'max_output_tokens': max(256, min(int(os.environ.get('PERPLEXITY_AGENT_MAX_OUTPUT_TOKENS', '1200')), 4000)),
+            'instructions': (
+                'Answer the user directly using current web evidence. Use the web search tool, '
+                'preserve source annotations, and do not invent citations.'
+            ),
+        },
+    )
+    status = payload.get('status')
+    if status and status != 'completed':
+        provider_error = payload.get('error') or {}
+        message = provider_error.get('message') if isinstance(provider_error, dict) else provider_error
+        raise ProviderAPIError(message or f'Perplexity Agent response ended with status {status}.', payload=payload)
+    return payload
+
+
+def perplexity_answer_text(payload):
+    output_text = payload.get('output_text')
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+    agent_parts = []
+    for output_item in payload.get('output') or []:
+        if not isinstance(output_item, dict) or output_item.get('type') != 'message':
+            continue
+        for content in output_item.get('content') or []:
+            if isinstance(content, dict) and content.get('type') == 'output_text' and isinstance(content.get('text'), str):
+                agent_parts.append(content['text'])
+    if agent_parts:
+        return '\n'.join(agent_parts).strip()
+    choices = payload.get('choices') or []
+    if not choices:
+        return ''
+    content = (choices[0].get('message') or {}).get('content')
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return '\n'.join(item.get('text', '') for item in content if isinstance(item, dict))
+    return ''
+
+
+def perplexity_answer_citations(payload):
+    """Return URL-bearing citations from current Agent and legacy Sonar payloads."""
+    citations = []
+    for item in payload.get('citations') or []:
+        citations.append(item)
+    for output_item in payload.get('output') or []:
+        if not isinstance(output_item, dict) or output_item.get('type') != 'message':
+            continue
+        for content in output_item.get('content') or []:
+            if not isinstance(content, dict):
+                continue
+            for annotation in content.get('annotations') or []:
+                if isinstance(annotation, dict) and annotation.get('url'):
+                    citations.append(annotation)
+    return citations
+
+
+def normalise_perplexity_sources(search_payload, answer_payload):
+    sources = []
+    seen = set()
+
+    def add_source(item, source_kind, rank):
+        if isinstance(item, str):
+            item = {'url': item}
+        if not isinstance(item, dict):
+            return
+        url = evidence_url(item.get('url'))
+        evidence_key = (source_kind, url)
+        if not url or evidence_key in seen:
+            return
+        seen.add(evidence_key)
+        sources.append({
+            'rank': rank, 'source_kind': source_kind,
+            'title': (item.get('title') or '')[:2000] or None,
+            'url': url, 'domain': normalise_domain(url),
+            'snippet': (item.get('snippet') or '')[:8000] or None,
+            'published_at': str(item.get('date') or item.get('last_updated') or '')[:80] or None,
+        })
+
+    for rank, item in enumerate((search_payload or {}).get('results') or [], 1):
+        add_source(item, 'search_result', rank)
+    answer_results = (answer_payload or {}).get('search_results') or []
+    for rank, item in enumerate(answer_results, 1):
+        add_source(item, 'answer_source', rank)
+    for output_item in (answer_payload or {}).get('output') or []:
+        if not isinstance(output_item, dict):
+            continue
+        if output_item.get('type') == 'search_results':
+            for rank, item in enumerate(output_item.get('results') or [], 1):
+                add_source(item, 'agent_search_result', rank)
+        elif output_item.get('type') == 'fetch_url_results':
+            for rank, item in enumerate(output_item.get('contents') or [], 1):
+                add_source(item, 'agent_fetched_source', rank)
+    for rank, item in enumerate(perplexity_answer_citations(answer_payload or {}), 1):
+        add_source(item, 'answer_citation', rank)
+    return sources
+
+
+def parse_json_from_model(text_value):
+    text_value = (text_value or '').strip()
+    text_value = re.sub(r'^```(?:json)?\s*', '', text_value, flags=re.I)
+    text_value = re.sub(r'\s*```$', '', text_value)
+    try:
+        return json.loads(text_value)
+    except json.JSONDecodeError:
+        match = re.search(r'(\{.*\}|\[.*\])', text_value, flags=re.S)
+        if not match:
+            raise
+        return json.loads(match.group(1))
+
+
+def rule_based_opportunities(project, evidence_rows):
+    opportunities = []
+    missing_mentions = [row for row in evidence_rows if row.get('answer_text') and not row.get('brand_mentioned')]
+    missing_citations = [row for row in evidence_rows if row.get('answer_text') and not row.get('brand_cited')]
+    missing_sources = [row for row in evidence_rows if row.get('source_present') is False]
+    if missing_mentions:
+        sample = missing_mentions[0]
+        opportunities.append({
+            'title': 'Build a direct answer for an unmentioned prompt',
+            'rationale': f"{project['brand_name']} was absent from the stored answer to: {sample['prompt']}",
+            'evidence_refs': f"answer:{sample['id']}", 'priority': 'high',
+        })
+    if missing_citations:
+        sample = missing_citations[0]
+        opportunities.append({
+            'title': 'Publish sourceable proof for an uncited topic',
+            'rationale': f"The provider answer did not cite {project['domain']} for: {sample['prompt']}",
+            'evidence_refs': f"answer:{sample['id']}", 'priority': 'high',
+        })
+    if missing_sources:
+        sample = missing_sources[0]
+        opportunities.append({
+            'title': 'Close a ranked-source coverage gap',
+            'rationale': f"The tracked domain did not appear in the saved Perplexity Search results for: {sample['prompt']}",
+            'evidence_refs': f"answer:{sample['id']}", 'priority': 'medium',
+        })
+    if not opportunities and evidence_rows:
+        sample = evidence_rows[0]
+        opportunities.append({
+            'title': 'Protect and deepen measured coverage',
+            'rationale': 'Current evidence contains brand or source coverage. Add fresh first-party proof and monitor the same approved prompt set over time.',
+            'evidence_refs': f"answer:{sample['id']}", 'priority': 'medium',
+        })
+    return opportunities[:5]
+
+
+def open_model_settings():
+    if os.environ.get('HF_TOKEN'):
+        return {
+            'configured': True,
+            'provider': 'Hugging Face Inference Providers',
+            'base_url': os.environ.get('HF_BASE_URL', 'https://router.huggingface.co/v1'),
+            'model': os.environ.get('HF_MODEL', 'openai/gpt-oss-120b:preferred'),
+            'headers': {'Authorization': f"Bearer {os.environ['HF_TOKEN']}"},
+        }
+    if os.environ.get('OLLAMA_BASE_URL'):
+        return {
+            'configured': True,
+            'provider': 'Ollama',
+            'base_url': os.environ['OLLAMA_BASE_URL'],
+            'model': os.environ.get('OLLAMA_MODEL', 'gpt-oss:20b'),
+            'headers': {},
+        }
+    return {
+        'configured': False,
+        'provider': 'Hugging Face Inference Providers or Ollama',
+        'base_url': os.environ.get('HF_BASE_URL', 'https://router.huggingface.co/v1'),
+        'model': os.environ.get('HF_MODEL', 'openai/gpt-oss-120b:preferred'),
+        'headers': {},
+    }
+
+
+def open_model_evidence_opportunities(project, evidence_rows):
+    """Use an open-weight model only to summarize stored evidence, never to invent metrics."""
+    settings = open_model_settings()
+    if not settings['configured'] or not evidence_rows:
+        return None
+    model = settings['model']
+    evidence = [
+        {
+            'evidence_id': f"answer:{row['id']}", 'prompt': row['prompt'],
+            'brand_mentioned': row.get('brand_mentioned'), 'brand_cited': row.get('brand_cited'),
+            'source_present': row.get('source_present'), 'best_source_rank': row.get('best_source_rank'),
+            'answer_excerpt': (row.get('answer_text') or '')[:700],
+        }
+        for row in evidence_rows[:20]
+    ]
+    payload = external_json_request(
+        settings['base_url'].rstrip('/') + '/chat/completions',
+        method='POST', headers=settings['headers'], timeout=90,
+        payload={
+            'model': model, 'temperature': 0.1, 'max_tokens': 900,
+            'messages': [
+                {
+                    'role': 'system',
+                    'content': (
+                        'You are an AEO analyst. Use only the supplied evidence. Do not create or recalculate statistics. '
+                        'Return JSON with an opportunities array. Each item must contain title, rationale, evidence_refs, and priority. '
+                        'evidence_refs must cite one or more supplied evidence_id values. Return at most five items.'
+                    ),
+                },
+                {
+                    'role': 'user',
+                    'content': json.dumps({'brand': project['brand_name'], 'domain': project['domain'], 'evidence': evidence}),
+                },
+            ],
+        },
+    )
+    choices = payload.get('choices') or []
+    if not choices:
+        raise ProviderAPIError('The open model returned no recommendation content.')
+    content = (choices[0].get('message') or {}).get('content') or ''
+    parsed = parse_json_from_model(content)
+    items = parsed.get('opportunities') if isinstance(parsed, dict) else parsed
+    if not isinstance(items, list):
+        raise ProviderAPIError('The open model returned an invalid opportunity format.')
+    allowed_refs = {f"answer:{row['id']}" for row in evidence_rows}
+    normalized = []
+    for item in items[:5]:
+        if not isinstance(item, dict):
+            continue
+        refs = item.get('evidence_refs') or ''
+        if isinstance(refs, list):
+            refs = ','.join(str(value) for value in refs)
+        cited_refs = [ref for ref in re.findall(r'answer:\d+', str(refs)) if ref in allowed_refs]
+        if not cited_refs:
+            continue
+        title = str(item.get('title') or '').strip()
+        rationale = str(item.get('rationale') or '').strip()
+        if title and rationale:
+            normalized.append({
+                'title': title[:255], 'rationale': rationale[:6000],
+                'evidence_refs': ','.join(dict.fromkeys(cited_refs)),
+                'priority': str(item.get('priority') or 'medium').lower() if str(item.get('priority') or '').lower() in {'high', 'medium', 'low'} else 'medium',
+            })
+    return normalized or None
+
+
+def persist_provider_answer(scan_id, prompt, project, search_payload, answer_payload, errors, latency_ms):
+    answer_text = perplexity_answer_text(answer_payload or {})
+    sources = normalise_perplexity_sources(search_payload or {}, answer_payload or {})
+    aliases = project_brand_aliases(project)
+    citations = perplexity_answer_citations(answer_payload or {})
+    citation_urls = [item if isinstance(item, str) else item.get('url') for item in citations if isinstance(item, (str, dict))]
+    search_results = (search_payload or {}).get('results') or []
+    search_urls = [item.get('url') for item in search_results if isinstance(item, dict)]
+    answer_available = bool(answer_payload is not None and answer_text)
+    brand_mentioned = text_mentions_alias(answer_text, aliases) if answer_available else None
+    brand_cited = any(domain_matches(url, project['domain']) for url in citation_urls if url) if answer_available else None
+    source_ranks = [rank for rank, url in enumerate(search_urls, 1) if url and domain_matches(url, project['domain'])]
+    source_present = bool(source_ranks) if search_payload is not None else None
+    status = 'succeeded' if search_payload is not None and answer_available else ('partial' if search_payload is not None or answer_available else 'failed')
+    raw_response = json.dumps({'search': search_payload, 'answer': answer_payload}, ensure_ascii=False)
+    now = datetime.utcnow()
+    answer_model = (answer_payload or {}).get('model') or f"preset:{os.environ.get('PERPLEXITY_AGENT_PRESET', 'low')}"
+    with engine.begin() as conn:
+        result = conn.execute(insert(analytics_provider_answers).values(
+            scan_run_id=scan_id, prompt_id=prompt['id'],
+            prompt_text=prompt['prompt'], prompt_intent=prompt.get('intent'), topic_name=prompt.get('topic_name'),
+            provider='Perplexity',
+            model=str(answer_model)[:160], status=status,
+            search_request_id=(search_payload or {}).get('id'), answer_request_id=(answer_payload or {}).get('id'),
+            answer_text=answer_text or None, raw_response=raw_response,
+            brand_mentioned=brand_mentioned, brand_cited=brand_cited, source_present=source_present,
+            best_source_rank=min(source_ranks) if source_ranks else None, latency_ms=latency_ms,
+            error='; '.join(errors)[:2000] if errors else None,
+            created_at=now, completed_at=now,
+        ))
+        answer_id = result.inserted_primary_key[0]
+        if sources:
+            conn.execute(insert(analytics_answer_sources), [dict(source, answer_id=answer_id) for source in sources])
+    return answer_id
+
+
+def provider_evidence_rows(scan_id):
+    with engine.connect() as conn:
+        rows = conn.execute(select(
+            analytics_provider_answers,
+            func.coalesce(analytics_provider_answers.c.prompt_text, analytics_tracked_prompts.c.prompt).label('resolved_prompt'),
+            func.coalesce(analytics_provider_answers.c.prompt_intent, analytics_tracked_prompts.c.intent).label('resolved_intent'),
+            func.coalesce(analytics_provider_answers.c.topic_name, analytics_topics.c.name).label('resolved_topic_name'),
+        ).outerjoin(
+            analytics_tracked_prompts, analytics_provider_answers.c.prompt_id == analytics_tracked_prompts.c.id
+        ).outerjoin(
+            analytics_topics, analytics_tracked_prompts.c.topic_id == analytics_topics.c.id
+        ).where(analytics_provider_answers.c.scan_run_id == scan_id)
+            .order_by(analytics_provider_answers.c.id)).mappings().all()
+    evidence = []
+    for row in rows:
+        item = row_to_dict(row)
+        item['prompt'] = item.pop('resolved_prompt')
+        item['intent'] = item.pop('resolved_intent')
+        item['topic_name'] = item.pop('resolved_topic_name')
+        evidence.append(item)
+    return evidence
+
+
+def run_prompt_scan_job(job_id):
+    with engine.begin() as conn:
+        job = conn.execute(select(analytics_audit_jobs).where(
+            analytics_audit_jobs.c.id == job_id
+        )).mappings().first()
+        if not job or job['status'] not in {'queued', 'failed_retryable'}:
+            return
+        claimed = conn.execute(update(analytics_audit_jobs).where(
+            (analytics_audit_jobs.c.id == job_id) &
+            (analytics_audit_jobs.c.status.in_(['queued', 'failed_retryable']))
+        ).values(status='running', started_at=datetime.utcnow(), completed_at=None, error=None))
+        if claimed.rowcount != 1:
+            return
+        project = conn.execute(select(analytics_projects).where(
+            analytics_projects.c.id == job['project_id']
+        )).mappings().first()
+        prompts = conn.execute(select(
+            analytics_tracked_prompts,
+            analytics_topics.c.name.label('topic_name'),
+        ).outerjoin(
+            analytics_topics, analytics_tracked_prompts.c.topic_id == analytics_topics.c.id
+        ).where(
+            (analytics_tracked_prompts.c.project_id == job['project_id']) &
+            (analytics_tracked_prompts.c.active.is_(True))
+        ).order_by(analytics_tracked_prompts.c.id)).mappings().all()
+        competitors = conn.execute(select(analytics_competitors).where(
+            analytics_competitors.c.project_id == job['project_id']
+        )).mappings().all()
+    if not project or not prompts:
+        update_analytics_job(job_id, status='failed_terminal', progress=100, error='Add at least one active tracked prompt first.', completed_at=datetime.utcnow())
+        return
+    if len(prompts) > PERPLEXITY_MAX_PROMPTS_PER_SCAN:
+        update_analytics_job(
+            job_id, status='failed_terminal', progress=100,
+            error=f'Pause prompts until no more than {PERPLEXITY_MAX_PROMPTS_PER_SCAN} are active for one provider scan.',
+            completed_at=datetime.utcnow(),
+        )
+        return
+    if not os.environ.get('PERPLEXITY_API_KEY'):
+        update_analytics_job(job_id, status='failed_terminal', progress=100, error='PERPLEXITY_API_KEY is not configured.', completed_at=datetime.utcnow())
+        return
+
+    with engine.connect() as conn:
+        completed_run = conn.execute(select(
+            analytics_prompt_scan_runs.c.status,
+            analytics_prompt_scan_runs.c.prompt_count,
+            analytics_prompt_scan_runs.c.completed_count,
+            analytics_prompt_scan_runs.c.completed_at,
+        ).where(analytics_prompt_scan_runs.c.job_id == job_id)
+            .order_by(desc(analytics_prompt_scan_runs.c.created_at)).limit(1)).mappings().first()
+    if completed_run and completed_run['completed_at'] and completed_run['status'] in {'succeeded', 'partial', 'failed'}:
+        job_status = 'succeeded' if completed_run['status'] in {'succeeded', 'partial'} else 'failed_terminal'
+        update_analytics_job(
+            job_id, status=job_status, progress=100,
+            completed_items=completed_run['completed_count'], total_items=completed_run['prompt_count'],
+            error=None if job_status == 'succeeded' else 'The saved provider scan did not complete successfully.',
+            completed_at=datetime.utcnow(),
+        )
+        return
+
+    project = dict(project)
+    prompts = [dict(row) for row in prompts]
+    competitors = [dict(row) for row in competitors]
+    competitor_snapshot = json.dumps([
+        {'name': competitor['name'], 'domain': competitor.get('domain')}
+        for competitor in competitors
+    ], ensure_ascii=False)
+    region = None
+    with engine.connect() as conn:
+        schedule = conn.execute(select(analytics_scan_schedules).where(
+            analytics_scan_schedules.c.project_id == project['id']
+        )).mappings().first()
+    if schedule:
+        region = schedule['region']
+    now = datetime.utcnow()
+    with engine.begin() as conn:
+        existing_run = conn.execute(select(analytics_prompt_scan_runs.c.id).where(
+            analytics_prompt_scan_runs.c.job_id == job_id
+        )).scalar_one_or_none()
+        if existing_run:
+            scan_id = existing_run
+            existing_answer_ids = [row[0] for row in conn.execute(select(analytics_provider_answers.c.id).where(
+                analytics_provider_answers.c.scan_run_id == scan_id
+            )).all()]
+            if existing_answer_ids:
+                conn.execute(analytics_answer_sources.delete().where(
+                    analytics_answer_sources.c.answer_id.in_(existing_answer_ids)
+                ))
+            conn.execute(analytics_provider_answers.delete().where(
+                analytics_provider_answers.c.scan_run_id == scan_id
+            ))
+            conn.execute(analytics_content_opportunities.delete().where(
+                analytics_content_opportunities.c.scan_run_id == scan_id
+            ))
+            conn.execute(update(analytics_prompt_scan_runs).where(
+                analytics_prompt_scan_runs.c.id == scan_id
+            ).values(
+                status='running', prompt_count=len(prompts), completed_count=0,
+                competitor_snapshot=competitor_snapshot,
+                mention_rate=None, citation_rate=None, source_presence_rate=None,
+                share_of_voice=None, recommendation_summary=None, error=None,
+                completed_at=None,
+            ))
+        else:
+            result = conn.execute(insert(analytics_prompt_scan_runs).values(
+                project_id=project['id'], job_id=job_id, provider='Perplexity',
+                model=f"preset:{os.environ.get('PERPLEXITY_AGENT_PRESET', 'low')}"[:160], region=region,
+                competitor_snapshot=competitor_snapshot,
+                status='running', prompt_count=len(prompts), completed_count=0,
+                mention_rate=None, citation_rate=None, source_presence_rate=None,
+                share_of_voice=None, recommendation_summary=None, error=None,
+                created_at=now, completed_at=None,
+            ))
+            scan_id = result.inserted_primary_key[0]
+        conn.execute(update(analytics_audit_jobs).where(analytics_audit_jobs.c.id == job_id).values(
+            total_items=len(prompts), completed_items=0, progress=0,
+        ))
+
+    failures = []
+    for index, prompt in enumerate(prompts, 1):
+        started = time.monotonic()
+        search_payload = None
+        answer_payload = None
+        errors = []
+        try:
+            search_payload = call_perplexity_search(prompt['prompt'], region)
+        except ProviderAPIError as error:
+            errors.append(f'Search API: {error}')
+        try:
+            answer_payload = call_perplexity_answer(prompt['prompt'])
+            if not perplexity_answer_text(answer_payload):
+                errors.append('Agent API: completed without answer text')
+        except ProviderAPIError as error:
+            errors.append(f'Agent API: {error}')
+        if errors:
+            failures.append(f"Prompt {prompt['id']}: {'; '.join(errors)}")
+        persist_provider_answer(
+            scan_id, prompt, project, search_payload, answer_payload, errors,
+            round((time.monotonic() - started) * 1000),
+        )
+        progress = round(index / len(prompts) * 100)
+        update_analytics_job(job_id, completed_items=index, total_items=len(prompts), progress=progress)
+        if index < len(prompts):
+            time.sleep(max(0, min(float(os.environ.get('PERPLEXITY_REQUEST_DELAY_SECONDS', '0.2')), 3)))
+
+    evidence_rows = provider_evidence_rows(scan_id)
+    returned_models = list(dict.fromkeys(row['model'] for row in evidence_rows if row.get('model')))
+    answer_measured = [row for row in evidence_rows if row.get('answer_text')]
+    source_measured = [row for row in evidence_rows if row.get('source_present') is not None]
+    mention_rate = round(sum(bool(row['brand_mentioned']) for row in answer_measured) / len(answer_measured) * 100, 2) if answer_measured else None
+    citation_rate = round(sum(bool(row['brand_cited']) for row in answer_measured) / len(answer_measured) * 100, 2) if answer_measured else None
+    source_presence_rate = round(sum(bool(row['source_present']) for row in source_measured) / len(source_measured) * 100, 2) if source_measured else None
+
+    brand_occurrences = sum(text_mentions_alias(row.get('answer_text'), project_brand_aliases(project)) for row in answer_measured)
+    competitor_occurrences = 0
+    for competitor in competitors:
+        aliases = [competitor['name'], competitor.get('domain')]
+        competitor_occurrences += sum(text_mentions_alias(row.get('answer_text'), aliases) for row in answer_measured)
+    voice_denominator = brand_occurrences + competitor_occurrences
+    share_of_voice = round(brand_occurrences / voice_denominator * 100, 2) if voice_denominator else None
+
+    rule_opportunities = rule_based_opportunities(project, evidence_rows)
+    opportunity_source = 'stored-evidence rules'
+    opportunities = rule_opportunities
+    open_model = open_model_settings()
+    if open_model['configured']:
+        try:
+            model_opportunities = open_model_evidence_opportunities(project, evidence_rows)
+            if model_opportunities:
+                opportunities = model_opportunities
+                opportunity_source = f"{open_model['provider']} · {open_model['model']}"
+        except (ProviderAPIError, json.JSONDecodeError) as error:
+            failures.append(f'Open-model recommendation layer: {error}')
+    with engine.begin() as conn:
+        conn.execute(analytics_content_opportunities.delete().where(
+            analytics_content_opportunities.c.scan_run_id == scan_id
+        ))
+        if opportunities:
+            conn.execute(insert(analytics_content_opportunities), [
+                {
+                    'project_id': project['id'], 'scan_run_id': scan_id, 'source': opportunity_source,
+                    'title': item['title'][:255], 'rationale': item['rationale'],
+                    'evidence_refs': item['evidence_refs'], 'priority': item['priority'],
+                    'created_at': datetime.utcnow(),
+                }
+                for item in opportunities
+            ])
+        completed_count = len([row for row in evidence_rows if row['status'] in {'succeeded', 'partial'}])
+        scan_status = 'succeeded' if completed_count == len(prompts) and not failures else ('partial' if completed_count else 'failed')
+        summary = '; '.join(item['title'] for item in opportunities[:3]) if opportunities else None
+        conn.execute(update(analytics_prompt_scan_runs).where(analytics_prompt_scan_runs.c.id == scan_id).values(
+            status=scan_status, completed_count=completed_count,
+            model=(' / '.join(returned_models)[:160] if returned_models else f"preset:{os.environ.get('PERPLEXITY_AGENT_PRESET', 'low')}"),
+            mention_rate=mention_rate, citation_rate=citation_rate,
+            source_presence_rate=source_presence_rate, share_of_voice=share_of_voice,
+            recommendation_summary=summary, error='\n'.join(failures)[:5000] if failures else None,
+            completed_at=datetime.utcnow(),
+        ))
+    final_job_status = 'succeeded' if evidence_rows and any(row['status'] in {'succeeded', 'partial'} for row in evidence_rows) else 'failed_terminal'
+    update_analytics_job(
+        job_id, status=final_job_status, progress=100, completed_items=len(prompts), total_items=len(prompts),
+        error='\n'.join(failures)[:2000] if final_job_status != 'succeeded' else None,
+        completed_at=datetime.utcnow(),
+    )
+
+
+def latest_prompt_evidence(project_id, run_id=None):
+    with engine.connect() as conn:
+        statement = select(analytics_prompt_scan_runs).where(
+            analytics_prompt_scan_runs.c.project_id == project_id
+        )
+        if run_id:
+            statement = statement.where(analytics_prompt_scan_runs.c.id == run_id)
+        scan = conn.execute(statement.order_by(desc(analytics_prompt_scan_runs.c.created_at)).limit(1)).mappings().first()
+        if not scan:
+            return {'run': None, 'answers': [], 'opportunities': [], 'history': []}
+        scan = dict(scan)
+        try:
+            scan['competitor_set'] = json.loads(scan.get('competitor_snapshot') or '[]')
+        except json.JSONDecodeError:
+            scan['competitor_set'] = []
+        scan.pop('competitor_snapshot', None)
+        answer_rows = provider_evidence_rows(scan['id'])
+        answer_ids = [row['id'] for row in answer_rows]
+        sources_by_answer = {answer_id: [] for answer_id in answer_ids}
+        if answer_ids:
+            source_rows = conn.execute(select(analytics_answer_sources).where(
+                analytics_answer_sources.c.answer_id.in_(answer_ids)
+            ).order_by(analytics_answer_sources.c.answer_id, analytics_answer_sources.c.rank)).mappings().all()
+            for source in source_rows:
+                sources_by_answer[source['answer_id']].append(row_to_dict(source))
+        opportunities = [row_to_dict(row) for row in conn.execute(select(analytics_content_opportunities).where(
+            analytics_content_opportunities.c.scan_run_id == scan['id']
+        ).order_by(analytics_content_opportunities.c.priority, analytics_content_opportunities.c.id)).mappings().all()]
+        history = [row_to_dict(row) for row in conn.execute(select(
+            analytics_prompt_scan_runs.c.id, analytics_prompt_scan_runs.c.status,
+            analytics_prompt_scan_runs.c.provider, analytics_prompt_scan_runs.c.model,
+            analytics_prompt_scan_runs.c.mention_rate, analytics_prompt_scan_runs.c.citation_rate,
+            analytics_prompt_scan_runs.c.source_presence_rate, analytics_prompt_scan_runs.c.share_of_voice,
+            analytics_prompt_scan_runs.c.created_at,
+        ).where(analytics_prompt_scan_runs.c.project_id == project_id)
+            .order_by(desc(analytics_prompt_scan_runs.c.created_at)).limit(12)).mappings().all()]
+    for answer in answer_rows:
+        answer['sources'] = sources_by_answer.get(answer['id'], [])
+        answer.pop('raw_response', None)
+    history.reverse()
+    return {'run': row_to_dict(scan), 'answers': answer_rows, 'opportunities': opportunities, 'history': history}
+
+
+@app.route('/api/analytics/projects/<int:project_id>/prompt-scans', methods=['POST'])
+def start_analytics_prompt_scan(project_id):
+    user_id, project, error = ensure_project_owner(project_id)
+    if error:
+        return error
+    if not os.environ.get('PERPLEXITY_API_KEY'):
+        return jsonify({'error': 'Perplexity is not configured. Add PERPLEXITY_API_KEY on the server.'}), 503
+    with engine.connect() as conn:
+        prompt_count = conn.execute(select(func.count()).select_from(analytics_tracked_prompts).where(
+            (analytics_tracked_prompts.c.project_id == project_id) &
+            (analytics_tracked_prompts.c.active.is_(True))
+        )).scalar_one()
+        active = conn.execute(select(analytics_audit_jobs).where(
+            (analytics_audit_jobs.c.project_id == project_id) &
+            (analytics_audit_jobs.c.job_type == 'prompt_scan') &
+            (analytics_audit_jobs.c.status.in_(['queued', 'running']))
+        ).order_by(desc(analytics_audit_jobs.c.created_at)).limit(1)).mappings().first()
+    if not prompt_count:
+        return jsonify({'error': 'Add at least one active tracked prompt first.'}), 409
+    if prompt_count > PERPLEXITY_MAX_PROMPTS_PER_SCAN:
+        return jsonify({'error': f'Pause prompts until no more than {PERPLEXITY_MAX_PROMPTS_PER_SCAN} are active for one provider scan.'}), 409
+    if active:
+        return jsonify({'status': 'accepted', 'job': row_to_dict(active)}), 202
+    job_id = create_analytics_job(project, user_id, 'prompt_scan', provider='Perplexity')
+    start_background_analytics_job(job_id, run_prompt_scan_job)
+    return jsonify({'status': 'accepted', 'job_id': job_id}), 202
+
+
+@app.route('/api/analytics/projects/<int:project_id>/evidence', methods=['GET'])
+def analytics_evidence_endpoint(project_id):
+    _user_id, project, error = ensure_project_owner(project_id)
+    if error:
+        return error
+    try:
+        run_id = int(request.args['run_id']) if request.args.get('run_id') else None
+    except ValueError:
+        return jsonify({'error': 'run_id must be an integer.'}), 400
+    evidence = latest_prompt_evidence(project_id, run_id)
+    with engine.connect() as conn:
+        active_job = conn.execute(select(analytics_audit_jobs).where(
+            (analytics_audit_jobs.c.project_id == project_id) &
+            (analytics_audit_jobs.c.job_type == 'prompt_scan') &
+            (analytics_audit_jobs.c.status.in_(['queued', 'running']))
+        ).order_by(desc(analytics_audit_jobs.c.created_at)).limit(1)).mappings().first()
+    return jsonify({
+        'project': row_to_dict(project), 'evidence': evidence,
+        'active_job': row_to_dict(active_job) if active_job else None,
+    })
+
+
+@app.route('/api/analytics/projects/<int:project_id>/evidence/<int:answer_id>', methods=['GET'])
+def analytics_evidence_detail_endpoint(project_id, answer_id):
+    _user_id, _project, error = ensure_project_owner(project_id)
+    if error:
+        return error
+    with engine.connect() as conn:
+        answer = conn.execute(select(
+            analytics_provider_answers,
+            func.coalesce(analytics_provider_answers.c.prompt_text, analytics_tracked_prompts.c.prompt).label('resolved_prompt'),
+            func.coalesce(analytics_provider_answers.c.prompt_intent, analytics_tracked_prompts.c.intent).label('resolved_intent'),
+            func.coalesce(analytics_provider_answers.c.topic_name, analytics_topics.c.name).label('resolved_topic_name'),
+        ).join(
+            analytics_prompt_scan_runs, analytics_provider_answers.c.scan_run_id == analytics_prompt_scan_runs.c.id
+        ).outerjoin(
+            analytics_tracked_prompts, analytics_provider_answers.c.prompt_id == analytics_tracked_prompts.c.id
+        ).outerjoin(
+            analytics_topics, analytics_tracked_prompts.c.topic_id == analytics_topics.c.id
+        ).where(
+            (analytics_provider_answers.c.id == answer_id) &
+            (analytics_prompt_scan_runs.c.project_id == project_id)
+        )).mappings().first()
+        if not answer:
+            return jsonify({'error': 'Evidence record not found.'}), 404
+        sources = [row_to_dict(row) for row in conn.execute(select(analytics_answer_sources).where(
+            analytics_answer_sources.c.answer_id == answer_id
+        ).order_by(analytics_answer_sources.c.source_kind, analytics_answer_sources.c.rank)).mappings().all()]
+    result = row_to_dict(answer)
+    result['prompt'] = result.pop('resolved_prompt')
+    result['intent'] = result.pop('resolved_intent')
+    result['topic_name'] = result.pop('resolved_topic_name')
+    try:
+        result['raw_response'] = json.loads(result.get('raw_response') or '{}')
+    except json.JSONDecodeError:
+        result['raw_response'] = {'unparsed': result.get('raw_response')}
+    result['sources'] = sources
+    return jsonify({'evidence': result})
 
 
 def prompt_collection_for_user(collection_id, user_id):
@@ -1747,6 +4027,69 @@ def admin_contacts():
     </html>
     """
     return html
+
+
+@app.cli.command('run-scheduled-analytics')
+def run_scheduled_analytics_command():
+    """Recover queued jobs and enqueue due prompt schedules for a cron worker."""
+    now = datetime.utcnow()
+    stale_before = now - timedelta(minutes=45)
+    batch_size = max(1, min(int(os.environ.get('ANALYTICS_JOB_BATCH', '10')), 50))
+    with engine.begin() as conn:
+        conn.execute(update(analytics_audit_jobs).where(
+            (analytics_audit_jobs.c.status == 'running') &
+            (analytics_audit_jobs.c.started_at < stale_before)
+        ).values(status='failed_retryable', error='Recovered after a stale worker lease.'))
+        due_schedules = conn.execute(select(
+            analytics_scan_schedules,
+            analytics_projects.c.user_id,
+        ).join(
+            analytics_projects, analytics_scan_schedules.c.project_id == analytics_projects.c.id
+        ).where(
+            (analytics_scan_schedules.c.enabled.is_(True)) &
+            (analytics_scan_schedules.c.next_run_at <= now)
+        ).order_by(analytics_scan_schedules.c.next_run_at).limit(batch_size)).mappings().all()
+    scheduled_count = 0
+    for schedule in due_schedules:
+        project = project_for_user(schedule['project_id'], schedule['user_id'])
+        if not project:
+            continue
+        with engine.connect() as conn:
+            active = conn.execute(select(analytics_audit_jobs.c.id).where(
+                (analytics_audit_jobs.c.project_id == schedule['project_id']) &
+                (analytics_audit_jobs.c.job_type == 'prompt_scan') &
+                (analytics_audit_jobs.c.status.in_(['queued', 'running', 'failed_retryable']))
+            ).limit(1)).scalar_one_or_none()
+        if not active:
+            create_analytics_job(project, schedule['user_id'], 'prompt_scan', provider='Perplexity')
+            scheduled_count += 1
+        with engine.begin() as conn:
+            conn.execute(update(analytics_scan_schedules).where(
+                analytics_scan_schedules.c.id == schedule['id']
+            ).values(
+                last_run_at=now, next_run_at=next_schedule_time(schedule['frequency'], now),
+                updated_at=now,
+            ))
+
+    with engine.connect() as conn:
+        jobs = conn.execute(select(analytics_audit_jobs.c.id, analytics_audit_jobs.c.job_type).where(
+            analytics_audit_jobs.c.status.in_(['queued', 'failed_retryable'])
+        ).order_by(analytics_audit_jobs.c.created_at).limit(batch_size)).all()
+    processed = 0
+    for job_id, job_type in jobs:
+        try:
+            if job_type == 'site_audit':
+                run_site_audit_job(job_id)
+                processed += 1
+            elif job_type == 'prompt_scan':
+                run_prompt_scan_job(job_id)
+                processed += 1
+        except Exception as error:
+            update_analytics_job(
+                job_id, status='failed_retryable', error=str(error)[:2000],
+                completed_at=datetime.utcnow(),
+            )
+    print(f'Analytics worker queued {scheduled_count} scheduled scan(s) and processed {processed} job(s).')
 
 
 if __name__ == '__main__':
