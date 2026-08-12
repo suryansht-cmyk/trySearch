@@ -20,6 +20,9 @@ document.addEventListener('DOMContentLoaded', () => {
     notice: $('#analytics-notice'), scan: $('#scan-button'), firstScan: $('#first-scan-button'),
     reportEmpty: $('#report-empty'), report: $('#report-content'), lastScan: $('#last-scan'),
     projectList: $('#sidebar-project-list'), evidenceDialog: $('#evidence-dialog'),
+    primarySidebar: $('#analytics-primary-sidebar'), mobileMenu: $('#analytics-mobile-menu'),
+    sidebarScrim: $('#sidebar-scrim'), workspaceSearch: $('#analytics-workspace-search'),
+    exportButton: $('#export-analytics'),
   };
 
   async function apiRequest(url, options = {}) {
@@ -74,6 +77,14 @@ document.addEventListener('DOMContentLoaded', () => {
     element.parentElement?.classList.toggle('metric-unavailable', value === null || value === undefined);
   }
 
+  function setOverviewPercent(valueId, unitId, value) {
+    const valueElement = $(`#${valueId}`);
+    const unitElement = $(`#${unitId}`);
+    const unavailable = value === null || value === undefined || Number.isNaN(Number(value));
+    valueElement.textContent = unavailable ? '—' : formatNumber(value);
+    unitElement.hidden = unavailable;
+  }
+
   function yesNoUnavailable(value) {
     if (value === null || value === undefined) return 'Unavailable';
     return value ? 'Yes' : 'No';
@@ -90,6 +101,121 @@ document.addEventListener('DOMContentLoaded', () => {
     $('small', element).textContent = detail;
   }
 
+  function updateSetupProgress() {
+    const auditDone = Boolean(state.audit?.audit?.run && state.audit.audit.run.status !== 'failed');
+    const searchDone = state.searchConsole?.status === 'connected';
+    const evidenceDone = Boolean(state.evidence?.run && Number(state.evidence.run.completed_count) > 0);
+    const completed = [auditDone, searchDone, evidenceDone].filter(Boolean).length;
+    $('#setup-progress-text').textContent = `${completed} of 3`;
+    $('#setup-progress-bar').style.width = `${completed / 3 * 100}%`;
+  }
+
+  function renderVisibilityTrend(history = []) {
+    const chart = $('#trend-chart');
+    const measured = history.filter((entry) => entry.mention_rate !== null && entry.mention_rate !== undefined);
+    const width = 720;
+    const height = 260;
+    const left = 46;
+    const right = 18;
+    const top = 18;
+    const bottom = 34;
+    const plotWidth = width - left - right;
+    const plotHeight = height - top - bottom;
+    const grid = [100, 75, 50, 25, 0].map((value) => {
+      const y = top + ((100 - value) / 100) * plotHeight;
+      return `<line x1="${left}" y1="${y}" x2="${width - right}" y2="${y}" /><text x="${left - 10}" y="${y + 4}" text-anchor="end">${value}%</text>`;
+    }).join('');
+
+    if (!measured.length) {
+      chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="No provider visibility history is available"><g class="chart-grid">${grid}</g><line class="chart-zero" x1="${left}" y1="${height - bottom}" x2="${width - right}" y2="${height - bottom}" /><text class="chart-empty-label" x="${width / 2}" y="${height / 2}">No provider scan data yet</text></svg>`;
+      return;
+    }
+
+    const pointFor = (entry, index) => {
+      const x = measured.length === 1 ? left + plotWidth / 2 : left + (index / (measured.length - 1)) * plotWidth;
+      const y = top + ((100 - Number(entry.mention_rate)) / 100) * plotHeight;
+      return { x, y, value: Number(entry.mention_rate), date: entry.created_at };
+    };
+    const points = measured.map(pointFor);
+    const pointString = points.map((point) => `${point.x},${point.y}`).join(' ');
+    const areaPath = `M ${points[0].x} ${height - bottom} L ${pointString.replaceAll(' ', ' L ')} L ${points.at(-1).x} ${height - bottom} Z`;
+    const labels = points.map((point, index) => {
+      if (measured.length > 7 && index % Math.ceil(measured.length / 6) !== 0 && index !== measured.length - 1) return '';
+      const label = new Date(point.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      return `<text class="chart-date" x="${point.x}" y="${height - 10}" text-anchor="middle">${esc(label)}</text>`;
+    }).join('');
+    const dots = points.map((point, index) => `<circle cx="${point.x}" cy="${point.y}" r="${index === points.length - 1 ? 5 : 3}"><title>${esc(formatDate(point.date))}: ${formatNumber(point.value)}%</title></circle>`).join('');
+    chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Answer visibility history from ${formatNumber(points[0].value)} to ${formatNumber(points.at(-1).value)} percent"><defs><linearGradient id="visibility-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff7f11" stop-opacity=".22"/><stop offset="100%" stop-color="#ff7f11" stop-opacity="0"/></linearGradient></defs><g class="chart-grid">${grid}</g><path class="chart-area" d="${areaPath}"/><polyline class="chart-line" points="${pointString}"/>${dots}${labels}</svg>`;
+  }
+
+  function renderOverviewEvidence(evidence) {
+    const run = evidence?.run;
+    const answers = evidence?.answers || [];
+    if (!run) {
+      setOverviewPercent('overview-answer-visibility', 'overview-answer-visibility-unit', null);
+      $('#overview-visibility-delta').textContent = 'Provider evidence required';
+      $('#overview-rankings').innerHTML = '<div class="ranking-empty">Run a Perplexity prompt scan to populate provider evidence.</div>';
+      $('#overview-average-position').textContent = '—';
+      $('#overview-position-detail').textContent = 'No ranked source appearances are available.';
+      $('#overview-position-marker').style.left = '0%';
+      setOverviewPercent('overview-sov', 'overview-sov-unit', null);
+      $('#overview-sov-detail').textContent = 'Add competitors and run a provider scan.';
+      $('#overview-sov-ring').style.setProperty('--sov', 0);
+      $('#overview-sov-ring').setAttribute('aria-label', 'Share of voice unavailable');
+      $('#trend-current').textContent = 'No provider trend yet';
+      renderVisibilityTrend([]);
+      return;
+    }
+
+    setOverviewPercent('overview-answer-visibility', 'overview-answer-visibility-unit', run.mention_rate);
+    const comparableHistory = (evidence.history || []).filter((entry) => (
+      entry.provider === run.provider && entry.model === run.model &&
+      entry.mention_rate !== null && entry.mention_rate !== undefined
+    ));
+    if (comparableHistory.length > 1) {
+      const previous = Number(comparableHistory.at(-2).mention_rate);
+      const current = Number(comparableHistory.at(-1).mention_rate);
+      const delta = current - previous;
+      $('#overview-visibility-delta').textContent = `${delta > 0 ? '+' : ''}${formatNumber(delta)} points from the comparable prior run`;
+    } else {
+      $('#overview-visibility-delta').textContent = `Baseline · ${run.completed_count}/${run.prompt_count} prompts completed`;
+    }
+    $('#trend-current').textContent = `${run.provider} · ${run.completed_count}/${run.prompt_count} prompts · ${formatDate(run.completed_at || run.created_at)}`;
+    renderVisibilityTrend(comparableHistory);
+
+    const measuredMentions = answers.filter((answer) => answer.brand_mentioned !== null && answer.brand_mentioned !== undefined);
+    const measuredCitations = answers.filter((answer) => answer.brand_cited !== null && answer.brand_cited !== undefined);
+    const measuredSources = answers.filter((answer) => answer.source_present !== null && answer.source_present !== undefined);
+    const mentioned = measuredMentions.filter((answer) => answer.brand_mentioned).length;
+    const cited = measuredCitations.filter((answer) => answer.brand_cited).length;
+    const ranked = measuredSources.filter((answer) => answer.source_present).length;
+    const resultCell = (value) => value === null || value === undefined ? '—' : `${formatNumber(value)}%`;
+    const rows = [
+      ['Answer mentions', `${mentioned} / ${measuredMentions.length}`, run.mention_rate],
+      ['Domain citations', `${cited} / ${measuredCitations.length}`, run.citation_rate],
+      ['Ranked source sets', `${ranked} / ${measuredSources.length}`, run.source_presence_rate],
+    ];
+    $('#overview-rankings').innerHTML = rows.map(([label, measured, result], index) => `<div class="ranking-row"><span>${index + 1}</span><strong><i class="ranking-mark" aria-hidden="true">${index === 0 ? 't' : index === 1 ? '↗' : '⌕'}</i>${esc(label)}</strong><span>${esc(measured)}</span><b>${resultCell(result)}</b></div>`).join('');
+
+    const ranks = answers.map((answer) => Number(answer.best_source_rank)).filter((rank) => Number.isFinite(rank) && rank > 0);
+    const averageRank = ranks.length ? ranks.reduce((total, rank) => total + rank, 0) / ranks.length : null;
+    $('#overview-average-position').textContent = averageRank === null ? '—' : `#${formatNumber(averageRank)}`;
+    $('#overview-position-detail').textContent = averageRank === null
+      ? 'Your domain did not appear in the measured source result sets.'
+      : `${ranks.length} ranked appearance${ranks.length === 1 ? '' : 's'} · absent prompts are excluded.`;
+    const markerPosition = averageRank === null ? 0 : Math.max(0, Math.min(100, ((averageRank - 1) / 9) * 100));
+    $('#overview-position-marker').style.left = `${markerPosition}%`;
+
+    const competitors = (run.competitor_set || []).map((item) => item.name).filter(Boolean);
+    const shareOfVoice = competitors.length ? run.share_of_voice : null;
+    setOverviewPercent('overview-sov', 'overview-sov-unit', shareOfVoice);
+    $('#overview-sov-detail').textContent = competitors.length
+      ? `Compared with ${competitors.join(', ')} across ${run.completed_count} completed answers.`
+      : 'Add at least one competitor before measuring share of voice.';
+    $('#overview-sov-ring').style.setProperty('--sov', shareOfVoice ?? 0);
+    $('#overview-sov-ring').setAttribute('aria-label', shareOfVoice === null || shareOfVoice === undefined ? 'Share of voice unavailable' : `Brand share of voice ${formatNumber(shareOfVoice)} percent`);
+  }
+
   function setAuditBusy(busy, progress = null) {
     elements.scan.disabled = busy;
     elements.scan.textContent = busy
@@ -102,6 +228,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderProjectList() {
+    const selectedProject = state.projects.find((project) => project.id === state.selectedProjectId);
+    $('#context-workspace-name').textContent = selectedProject?.brand_name || 'AI Search Analytics';
     elements.projectList.innerHTML = state.projects.map((project) => {
       const active = project.id === state.selectedProjectId ? ' active' : '';
       const run = project.latest_run;
@@ -154,6 +282,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderSearchConsole(state.searchConsole, searchResult._error);
     renderTracking(state.tracking, trackingResult._error);
     renderEvidence(state.evidence, evidenceResult._error);
+    updateSetupProgress();
     if (searchResult._error || trackingResult._error || evidenceResult._error) {
       const firstError = searchResult._error || trackingResult._error || evidenceResult._error;
       showNotice(`Some evidence sources could not load: ${firstError.message}`);
@@ -200,12 +329,6 @@ document.addEventListener('DOMContentLoaded', () => {
     setPercentMetric('#share-of-voice', run.crawlability_score);
     $('#report-summary').textContent = run.summary;
     $('#report-source-badge').textContent = `${run.pages_audited} fetched · ${run.pages_failed} unavailable`;
-    $('#trend-current').textContent = run.readiness_score === null ? 'Unavailable' : `${formatNumber(run.readiness_score)}% current`;
-
-    const history = (audit.history || []).filter((entry) => entry.readiness_score !== null && entry.readiness_score !== undefined);
-    $('#trend-chart').innerHTML = history.length
-      ? history.map((entry) => `<div class="trend-bar" style="height:${Math.max(10, Number(entry.readiness_score))}%" title="${esc(formatDate(entry.created_at))}"><span>${formatNumber(entry.readiness_score)}</span></div>`).join('')
-      : '<span class="trend-empty">No completed score is available yet.</span>';
 
     const factors = [
       ['Metadata', run.metadata_score], ['Content', run.content_score],
@@ -342,6 +465,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const chip = $('#perplexity-source-status');
     if (loadError) {
       setSourceStatus(chip, 'error', 'Could not load');
+      renderOverviewEvidence(null);
       return;
     }
     const run = evidence?.run;
@@ -349,6 +473,7 @@ document.addEventListener('DOMContentLoaded', () => {
       setSourceStatus(chip, 'pending', 'No provider scan');
       $('#evidence-empty').hidden = false;
       $('#evidence-content').hidden = true;
+      renderOverviewEvidence(null);
       renderOpportunities([]);
       return;
     }
@@ -361,14 +486,15 @@ document.addEventListener('DOMContentLoaded', () => {
     setPercentMetric('#evidence-mention-rate', run.mention_rate);
     setPercentMetric('#evidence-citation-rate', run.citation_rate);
     setPercentMetric('#evidence-source-rate', run.source_presence_rate);
-    setPercentMetric('#evidence-share-voice', run.share_of_voice);
     const competitorNames = (run.competitor_set || []).map((item) => item.name).filter(Boolean);
+    setPercentMetric('#evidence-share-voice', competitorNames.length ? run.share_of_voice : null);
     const comparisonSet = competitorNames.length ? competitorNames.join(', ') : 'no saved competitors';
     $('#evidence-method').textContent = `Measured from ${run.completed_count} saved prompt result(s). Provider: ${run.provider}; returned model: ${run.model}; Search API region: ${run.region || 'provider default'}; comparison set: ${comparisonSet}; run time: ${formatDate(run.created_at)}. Failed prompts are excluded from answer denominators.`;
     $('#evidence-count').textContent = `${evidence.answers.length} record${evidence.answers.length === 1 ? '' : 's'}`;
     $('#evidence-list').innerHTML = evidence.answers.length
       ? evidence.answers.map((answer) => `<tr><td>${esc(answer.prompt)}</td><td>${esc(answer.topic_name || 'Unassigned')}</td><td>${esc(answer.provider)}<br><small>${esc(answer.model)}</small></td><td>${esc(yesNoUnavailable(answer.brand_mentioned))}</td><td>${esc(yesNoUnavailable(answer.brand_cited))}</td><td>${answer.best_source_rank ? `#${answer.best_source_rank}` : (answer.source_present === null ? 'Unavailable' : 'Not present')}</td><td>${esc(formatDate(answer.completed_at || answer.created_at))}</td><td><button class="evidence-view" type="button" data-evidence-id="${answer.id}">View evidence</button></td></tr>`).join('')
       : '<tr><td colspan="8">No evidence records were completed.</td></tr>';
+    renderOverviewEvidence(evidence);
     renderOpportunities(evidence.opportunities || []);
   }
 
@@ -391,6 +517,99 @@ document.addEventListener('DOMContentLoaded', () => {
       panel.classList.toggle('active', active);
       panel.hidden = !active;
     });
+    $$('[data-sidebar-view]').forEach((button) => {
+      const active = button.dataset.sidebarView === state.activeView && !button.hasAttribute('data-focus-findings');
+      button.classList.toggle('active', active);
+      if (button.matches('.primary-nav-link')) button.setAttribute('aria-current', active ? 'page' : 'false');
+    });
+    closePrimarySidebar();
+  }
+
+  function openPrimarySidebar() {
+    document.body.classList.add('sidebar-open');
+    elements.mobileMenu.setAttribute('aria-expanded', 'true');
+    elements.sidebarScrim.tabIndex = 0;
+  }
+
+  function closePrimarySidebar() {
+    document.body.classList.remove('sidebar-open');
+    elements.mobileMenu.setAttribute('aria-expanded', 'false');
+    elements.sidebarScrim.tabIndex = -1;
+  }
+
+  function filterTable(tableId, query) {
+    const tableBody = document.getElementById(tableId);
+    if (!tableBody) return;
+    const term = query.trim().toLocaleLowerCase();
+    [...tableBody.rows].forEach((row) => {
+      row.hidden = Boolean(term) && !row.textContent.toLocaleLowerCase().includes(term);
+    });
+  }
+
+  function inferViewFromSearch(query) {
+    const term = query.toLocaleLowerCase();
+    if (/opportunit|recommend|content action/.test(term)) return 'opportunities';
+    if (/prompt|topic|competitor|schedule/.test(term)) return 'prompts';
+    if (/mention|citation|perplexity|provider|evidence|source rank/.test(term)) return 'evidence';
+    if (/query|search console|click|impression|google/.test(term)) return 'search';
+    if (/page|sitemap|crawl|site health|issue/.test(term)) return 'pages';
+    if (/visibility|overview|dashboard|share of voice/.test(term)) return 'overview';
+    return null;
+  }
+
+  function handleWorkspaceSearch(commit = false) {
+    const query = elements.workspaceSearch.value.trim();
+    if (commit && query) {
+      const inferredView = inferViewFromSearch(query);
+      if (inferredView) setActiveView(inferredView);
+    }
+    const activePanel = $(`.analytics-view-panel[data-panel="${state.activeView}"]`);
+    const tableBody = $('tbody[id]', activePanel);
+    if (tableBody) filterTable(tableBody.id, query);
+  }
+
+  function exportAnalytics() {
+    const project = state.projects.find((item) => item.id === state.selectedProjectId);
+    if (!project) {
+      showNotice('Add a website before exporting analytics.');
+      return;
+    }
+    const payload = {
+      exported_at: new Date().toISOString(),
+      project,
+      provenance: {
+        website_audit: 'Public pages fetched by trySearch',
+        search_console: 'Google Search Console API when connected',
+        provider_evidence: 'Saved Perplexity Search and Agent API responses',
+      },
+      website_audit: state.audit?.audit || null,
+      search_console: state.searchConsole,
+      tracking_configuration: state.tracking,
+      provider_evidence: state.evidence,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const name = (project.domain || project.brand_name || 'analytics').replace(/[^a-z0-9.-]+/gi, '-').replace(/^-|-$/g, '');
+    link.href = url;
+    link.download = `trysearch-${name || 'analytics'}-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function loadCurrentUser() {
+    try {
+      const data = await apiRequest('/api/me');
+      if (!data.logged_in) return;
+      const name = data.user?.username || 'Your account';
+      $('#sidebar-user-name').textContent = name;
+      $('#sidebar-user-email').textContent = data.user?.email || 'Log out securely';
+      $('#sidebar-user-avatar').textContent = name.slice(0, 1).toLocaleUpperCase();
+    } catch (_) {
+      // The analytics APIs provide the authoritative session redirect.
+    }
   }
 
   async function pollJob(jobId, jobType) {
@@ -493,6 +712,48 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   $$('.analytics-view-tabs [data-view]').forEach((button) => button.addEventListener('click', () => setActiveView(button.dataset.view)));
+  $$('[data-sidebar-view]').forEach((button) => button.addEventListener('click', () => {
+    setActiveView(button.dataset.sidebarView);
+    if (button.hasAttribute('data-focus-findings')) {
+      window.requestAnimationFrame(() => $('#website-findings')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    }
+  }));
+  $$('[data-trigger-audit]').forEach((button) => button.addEventListener('click', startAudit));
+  $$('[data-filter-table]').forEach((input) => input.addEventListener('input', () => filterTable(input.dataset.filterTable, input.value)));
+  elements.mobileMenu.addEventListener('click', () => {
+    if (document.body.classList.contains('sidebar-open')) closePrimarySidebar();
+    else openPrimarySidebar();
+  });
+  elements.sidebarScrim.addEventListener('click', closePrimarySidebar);
+  elements.workspaceSearch.addEventListener('input', () => handleWorkspaceSearch(false));
+  elements.workspaceSearch.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      handleWorkspaceSearch(true);
+    }
+    if (event.key === 'Escape') {
+      elements.workspaceSearch.value = '';
+      handleWorkspaceSearch(false);
+      elements.workspaceSearch.blur();
+    }
+  });
+  elements.exportButton.addEventListener('click', exportAnalytics);
+  document.addEventListener('keydown', (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'k') {
+      event.preventDefault();
+      elements.workspaceSearch.focus();
+      elements.workspaceSearch.select();
+    } else if (event.key === 'Escape' && document.body.classList.contains('sidebar-open')) {
+      closePrimarySidebar();
+      elements.mobileMenu.focus();
+    }
+  });
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 1080) closePrimarySidebar();
+  });
+  const compareCompetitors = $('#compare-competitors');
+  compareCompetitors.disabled = true;
+  compareCompetitors.title = 'Per-brand historical series are not available from the stored provider evidence yet.';
   $('#open-project-dialog').addEventListener('click', openProjectDialog);
   $('#empty-add-project').addEventListener('click', openProjectDialog);
   $('#sidebar-add-project').addEventListener('click', openProjectDialog);
@@ -626,5 +887,6 @@ document.addEventListener('DOMContentLoaded', () => {
   } else {
     setActiveView('overview');
   }
+  loadCurrentUser();
   loadProjects(preferredProject).catch((error) => { elements.loading.hidden = true; showNotice(error.message); });
 });
