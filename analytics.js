@@ -7,6 +7,7 @@ document.addEventListener('DOMContentLoaded', () => {
     searchConsole: null,
     tracking: null,
     evidence: null,
+    rag: null,
     startupNotice: null,
     loadSequence: 0,
     pollingJobs: new Set(),
@@ -127,14 +128,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }).join('');
 
     if (!measured.length) {
-      chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="No provider visibility history is available"><g class="chart-grid">${grid}</g><line class="chart-zero" x1="${left}" y1="${height - bottom}" x2="${width - right}" y2="${height - bottom}" /><text class="chart-empty-label" x="${width / 2}" y="${height / 2}">No provider scan data yet</text></svg>`;
+      chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" aria-hidden="true" focusable="false"><g class="chart-grid">${grid}</g><line class="chart-zero" x1="${left}" y1="${height - bottom}" x2="${width - right}" y2="${height - bottom}" /><text class="chart-empty-label" x="${width / 2}" y="${height / 2}">No provider scan data yet</text></svg>`;
+      chart.setAttribute('aria-label', 'Answer visibility history unavailable because there are no saved provider scans.');
       return;
     }
 
     const pointFor = (entry, index) => {
       const x = measured.length === 1 ? left + plotWidth / 2 : left + (index / (measured.length - 1)) * plotWidth;
       const y = top + ((100 - Number(entry.mention_rate)) / 100) * plotHeight;
-      return { x, y, value: Number(entry.mention_rate), date: entry.created_at };
+      return {
+        x, y, value: Number(entry.mention_rate), date: entry.created_at,
+        complete: Number(entry.answer_measured_count) === Number(entry.prompt_count) && Number(entry.prompt_count) > 0,
+      };
     };
     const points = measured.map(pointFor);
     const pointString = points.map((point) => `${point.x},${point.y}`).join(' ');
@@ -144,24 +149,148 @@ document.addEventListener('DOMContentLoaded', () => {
       const label = new Date(point.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
       return `<text class="chart-date" x="${point.x}" y="${height - 10}" text-anchor="middle">${esc(label)}</text>`;
     }).join('');
-    const dots = points.map((point, index) => `<circle cx="${point.x}" cy="${point.y}" r="${index === points.length - 1 ? 5 : 3}"><title>${esc(formatDate(point.date))}: ${formatNumber(point.value)}%</title></circle>`).join('');
-    chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Answer visibility history from ${formatNumber(points[0].value)} to ${formatNumber(points.at(-1).value)} percent"><defs><linearGradient id="visibility-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff7f11" stop-opacity=".22"/><stop offset="100%" stop-color="#ff7f11" stop-opacity="0"/></linearGradient></defs><g class="chart-grid">${grid}</g><path class="chart-area" d="${areaPath}"/><polyline class="chart-line" points="${pointString}"/>${dots}${labels}</svg>`;
+    const dots = points.map((point, index) => `<circle class="${point.complete ? 'complete' : 'partial'}" cx="${point.x}" cy="${point.y}" r="${index === points.length - 1 ? 5 : 3}"><title>${esc(formatDate(point.date))}: ${formatNumber(point.value)}%${point.complete ? '' : ' (partial answer cohort)'}</title></circle>`).join('');
+    chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" aria-hidden="true" focusable="false"><defs><linearGradient id="visibility-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff7f11" stop-opacity=".22"/><stop offset="100%" stop-color="#ff7f11" stop-opacity="0"/></linearGradient></defs><g class="chart-grid">${grid}</g><path class="chart-area" d="${areaPath}"/><polyline class="chart-line" points="${pointString}"/>${dots}${labels}</svg>`;
+    const partialCount = points.filter((point) => !point.complete).length;
+    chart.setAttribute('aria-label', `Answer visibility history from ${formatNumber(points[0].value)} to ${formatNumber(points.at(-1).value)} percent across ${points.length} saved provider runs. ${partialCount} run${partialCount === 1 ? '' : 's'} used a partial answer cohort.`);
+  }
+
+  function renderVisibilityComparison(rankings = []) {
+    const chart = $('#trend-chart');
+    const measured = rankings.filter((item) => item.visibility !== null && item.visibility !== undefined).slice(0, 6);
+    if (measured.length < 2) {
+      renderVisibilityTrend([]);
+      return;
+    }
+    const width = 720;
+    const height = 260;
+    const left = 145;
+    const right = 46;
+    const top = 18;
+    const rowHeight = (height - top - 12) / measured.length;
+    const plotWidth = width - left - right;
+    const rows = measured.map((item, index) => {
+      const y = top + index * rowHeight;
+      const barWidth = Math.max(0, Math.min(100, Number(item.visibility))) / 100 * plotWidth;
+      return `<g class="visibility-comparison-row"><text x="${left - 10}" y="${y + rowHeight * 0.56}" text-anchor="end">${esc(item.name)}</text><rect x="${left}" y="${y + rowHeight * 0.22}" width="${plotWidth}" height="${rowHeight * 0.48}" rx="5"/><rect class="measured" x="${left}" y="${y + rowHeight * 0.22}" width="${barWidth}" height="${rowHeight * 0.48}" rx="5"/><text class="value" x="${left + barWidth + 7}" y="${y + rowHeight * 0.56}">${formatNumber(item.visibility)}%</text></g>`;
+    }).join('');
+    chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" aria-hidden="true" focusable="false">${rows}</svg>`;
+    chart.setAttribute('aria-label', `Current answer visibility comparison: ${measured.map((item) => `${item.name} ${formatNumber(item.visibility)} percent`).join(', ')}.`);
+  }
+
+  function renderPositionTrend(history = []) {
+    const chart = $('#overview-position-chart');
+    const series = history.filter((entry) => entry.created_at);
+    const measured = series.filter((entry) => Number(entry.average_source_position) > 0);
+    const width = 560;
+    const height = 128;
+    const left = 38;
+    const right = 16;
+    const top = 14;
+    const bottom = 26;
+    const plotWidth = width - left - right;
+    const plotHeight = height - top - bottom;
+    if (!measured.length) {
+      chart.innerHTML = '<div class="chart-unavailable"><span>—</span><small>No saved ranked appearances</small></div>';
+      chart.setAttribute('aria-label', 'Average source position unavailable because the tracked domain has no saved ranked appearances.');
+      return;
+    }
+    const maxRank = Math.max(10, ...measured.map((entry) => Number(entry.average_source_position)));
+    const pointFor = (entry, index) => ({
+      x: series.length === 1 ? left + plotWidth / 2 : left + index / (series.length - 1) * plotWidth,
+      y: Number(entry.average_source_position) > 0
+        ? top + ((Number(entry.average_source_position) - 1) / Math.max(1, maxRank - 1)) * plotHeight
+        : null,
+      value: Number(entry.average_source_position) > 0 ? Number(entry.average_source_position) : null,
+      date: entry.created_at,
+      complete: Number(entry.answer_measured_count) === Number(entry.prompt_count) && Number(entry.prompt_count) > 0,
+    });
+    const points = series.map(pointFor);
+    const ticks = [1, Math.ceil(maxRank / 2), maxRank].filter((value, index, values) => values.indexOf(value) === index);
+    const grid = ticks.map((value) => {
+      const y = top + ((value - 1) / Math.max(1, maxRank - 1)) * plotHeight;
+      return `<line x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/><text x="${left - 8}" y="${y + 4}" text-anchor="end">#${formatNumber(value)}</text>`;
+    }).join('');
+    const labels = points.map((point, index) => {
+      if (series.length > 6 && index % Math.ceil(series.length / 5) !== 0 && index !== series.length - 1) return '';
+      return `<text class="chart-date" x="${point.x}" y="${height - 7}" text-anchor="middle">${esc(new Date(point.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))}</text>`;
+    }).join('');
+    const segments = [];
+    let segment = [];
+    points.forEach((point) => {
+      if (point.value === null) {
+        if (segment.length > 1) segments.push(segment);
+        segment = [];
+      } else segment.push(point);
+    });
+    if (segment.length > 1) segments.push(segment);
+    const lines = segments.map((items) => `<polyline class="position-chart-line" points="${items.map((point) => `${point.x},${point.y}`).join(' ')}"/>`).join('');
+    const dots = points.map((point) => point.value === null
+      ? `<g class="position-missing"><line x1="${point.x - 4}" y1="${top + plotHeight - 4}" x2="${point.x + 4}" y2="${top + plotHeight + 4}"/><line x1="${point.x + 4}" y1="${top + plotHeight - 4}" x2="${point.x - 4}" y2="${top + plotHeight + 4}"/><title>${esc(formatDate(point.date))}: no ranked source appearance</title></g>`
+      : `<circle class="${point.complete ? 'complete' : 'partial'}" cx="${point.x}" cy="${point.y}" r="4"><title>${esc(formatDate(point.date))}: average source position ${formatNumber(point.value)}${point.complete ? '' : ' (partial answer cohort)'}</title></circle>`
+    ).join('');
+    chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" aria-hidden="true" focusable="false"><g class="chart-grid">${grid}</g>${lines}${dots}${labels}</svg>`;
+    const missingCount = points.filter((point) => point.value === null).length;
+    const partialCount = points.filter((point) => point.value !== null && !point.complete).length;
+    chart.setAttribute('aria-label', `Average source position is available for ${measured.length} of ${points.length} saved runs. ${missingCount} run${missingCount === 1 ? '' : 's'} had no ranked appearance; ${partialCount} ranked run${partialCount === 1 ? '' : 's'} used a partial answer cohort. Lower positions are better.`);
+  }
+
+  const sovColors = ['#ff7f11', '#272727', '#4f46e5', '#0f9f6e', '#b54708', '#64748b', '#a855f7'];
+
+  function renderShareOfVoice(rankings = []) {
+    const ring = $('#overview-sov-ring');
+    const legend = $('#overview-sov-legend');
+    const measured = rankings.filter((item) => item.share_of_voice !== null && item.share_of_voice !== undefined);
+    if (!measured.length) {
+      ring.style.background = '';
+      ring.innerHTML = '<span>—</span>';
+      ring.classList.add('unavailable');
+      ring.setAttribute('aria-label', 'Share of voice unavailable because the saved answers contain no tracked-brand mentions.');
+      legend.innerHTML = '<li class="sov-empty">No measured brand mentions</li>';
+      return;
+    }
+    let cursor = 0;
+    const segments = measured.map((item, index) => {
+      const start = cursor;
+      cursor += Number(item.share_of_voice);
+      return `${sovColors[index % sovColors.length]} ${start}% ${cursor}%`;
+    });
+    ring.classList.remove('unavailable');
+    ring.style.background = `conic-gradient(${segments.join(', ')})`;
+    ring.innerHTML = '<span>SOV</span>';
+    ring.setAttribute('aria-label', measured.map((item) => `${item.name} ${formatNumber(item.share_of_voice)} percent`).join(', '));
+    legend.innerHTML = measured.map((item, index) => `<li${item.tracked ? ' class="tracked"' : ''}><i style="--legend-color:${sovColors[index % sovColors.length]}" aria-hidden="true"></i><span>${esc(item.name)}</span><strong>${formatNumber(item.share_of_voice)}%</strong></li>`).join('');
+  }
+
+  function provenanceText(evidence, suffix) {
+    const measurement = evidence?.measurement || {};
+    const run = evidence?.run || {};
+    const provider = measurement.provider || run.provider || 'Provider unavailable';
+    const model = measurement.model || run.model || 'model unavailable';
+    const cohort = measurement.cohort_id || run.cohort_id;
+    const completed = measurement.completed_count ?? run.completed_count;
+    const promptCount = measurement.prompt_count ?? run.prompt_count;
+    return `${provider} · ${model} · ${completed ?? 0}/${promptCount ?? 0} prompts${cohort ? ` · cohort ${cohort}` : ''} · ${suffix}`;
   }
 
   function renderOverviewEvidence(evidence) {
     const run = evidence?.run;
     const answers = evidence?.answers || [];
     if (!run) {
+      $('#compare-competitors').disabled = true;
+      $('#compare-competitors').setAttribute('aria-checked', 'false');
       setOverviewPercent('overview-answer-visibility', 'overview-answer-visibility-unit', null);
       $('#overview-visibility-delta').textContent = 'Provider evidence required';
       $('#overview-rankings').innerHTML = '<div class="ranking-empty">Run a Perplexity prompt scan to populate provider evidence.</div>';
       $('#overview-average-position').textContent = '—';
       $('#overview-position-detail').textContent = 'No ranked source appearances are available.';
-      $('#overview-position-marker').style.left = '0%';
+      renderPositionTrend([]);
       setOverviewPercent('overview-sov', 'overview-sov-unit', null);
       $('#overview-sov-detail').textContent = 'Add competitors and run a provider scan.';
-      $('#overview-sov-ring').style.setProperty('--sov', 0);
-      $('#overview-sov-ring').setAttribute('aria-label', 'Share of voice unavailable');
+      renderShareOfVoice([]);
+      $('#overview-rankings-provenance').textContent = 'No saved provider cohort.';
+      $('#overview-position-provenance').textContent = 'No saved source-rank cohort.';
+      $('#overview-sov-provenance').textContent = 'No saved comparison cohort.';
       $('#trend-current').textContent = 'No provider trend yet';
       renderVisibilityTrend([]);
       return;
@@ -170,50 +299,58 @@ document.addEventListener('DOMContentLoaded', () => {
     setOverviewPercent('overview-answer-visibility', 'overview-answer-visibility-unit', run.mention_rate);
     const comparableHistory = (evidence.history || []).filter((entry) => (
       entry.provider === run.provider && entry.model === run.model &&
+      (!run.cohort_id || entry.cohort_id === run.cohort_id) &&
       entry.mention_rate !== null && entry.mention_rate !== undefined
     ));
-    if (comparableHistory.length > 1) {
-      const previous = Number(comparableHistory.at(-2).mention_rate);
-      const current = Number(comparableHistory.at(-1).mention_rate);
+    const fullComparableHistory = comparableHistory.filter((entry) => (
+      Number(entry.answer_measured_count) === Number(entry.prompt_count) && Number(entry.prompt_count) > 0
+    ));
+    const currentIsComplete = Number(run.answer_measured_count) === Number(run.prompt_count) && Number(run.prompt_count) > 0;
+    if (currentIsComplete && fullComparableHistory.length > 1 && fullComparableHistory.at(-1).id === run.id) {
+      const previous = Number(fullComparableHistory.at(-2).mention_rate);
+      const current = Number(fullComparableHistory.at(-1).mention_rate);
       const delta = current - previous;
       $('#overview-visibility-delta').textContent = `${delta > 0 ? '+' : ''}${formatNumber(delta)} points from the comparable prior run`;
+    } else if (!currentIsComplete) {
+      $('#overview-visibility-delta').textContent = `Partial cohort · ${run.answer_measured_count ?? 0}/${run.prompt_count} answers measured`;
     } else {
       $('#overview-visibility-delta').textContent = `Baseline · ${run.completed_count}/${run.prompt_count} prompts completed`;
     }
-    $('#trend-current').textContent = `${run.provider} · ${run.completed_count}/${run.prompt_count} prompts · ${formatDate(run.completed_at || run.created_at)}`;
-    renderVisibilityTrend(comparableHistory);
+    $('#trend-current').textContent = `${run.provider} · ${run.completed_count}/${run.prompt_count} prompts${run.cohort_id ? ` · cohort ${run.cohort_id}` : ''} · ${formatDate(run.completed_at || run.created_at)}`;
+    const compareCompetitors = $('#compare-competitors');
+    const canCompare = (evidence.brand_rankings || []).filter((item) => item.visibility !== null && item.visibility !== undefined).length > 1;
+    compareCompetitors.disabled = !canCompare;
+    if (!canCompare) compareCompetitors.setAttribute('aria-checked', 'false');
+    if (compareCompetitors.getAttribute('aria-checked') === 'true') renderVisibilityComparison(evidence.brand_rankings || []);
+    else renderVisibilityTrend(comparableHistory);
 
-    const measuredMentions = answers.filter((answer) => answer.brand_mentioned !== null && answer.brand_mentioned !== undefined);
-    const measuredCitations = answers.filter((answer) => answer.brand_cited !== null && answer.brand_cited !== undefined);
-    const measuredSources = answers.filter((answer) => answer.source_present !== null && answer.source_present !== undefined);
-    const mentioned = measuredMentions.filter((answer) => answer.brand_mentioned).length;
-    const cited = measuredCitations.filter((answer) => answer.brand_cited).length;
-    const ranked = measuredSources.filter((answer) => answer.source_present).length;
-    const resultCell = (value) => value === null || value === undefined ? '—' : `${formatNumber(value)}%`;
-    const rows = [
-      ['Answer mentions', `${mentioned} / ${measuredMentions.length}`, run.mention_rate],
-      ['Domain citations', `${cited} / ${measuredCitations.length}`, run.citation_rate],
-      ['Ranked source sets', `${ranked} / ${measuredSources.length}`, run.source_presence_rate],
-    ];
-    $('#overview-rankings').innerHTML = rows.map(([label, measured, result], index) => `<div class="ranking-row"><span>${index + 1}</span><strong><i class="ranking-mark" aria-hidden="true">${index === 0 ? 't' : index === 1 ? '↗' : '⌕'}</i>${esc(label)}</strong><span>${esc(measured)}</span><b>${resultCell(result)}</b></div>`).join('');
+    const brandRankings = evidence.brand_rankings || [];
+    $('#overview-rankings').innerHTML = brandRankings.length
+      ? brandRankings.map((item) => `<div class="ranking-row${item.tracked ? ' tracked' : ''}" role="row"><span role="cell">${item.rank}</span><strong role="cell"><i class="ranking-mark" aria-hidden="true">${item.tracked ? 't' : esc((item.name || '?').slice(0, 1).toUpperCase())}</i><span>${esc(item.name)}${item.tracked ? '<small>Tracked</small>' : ''}</span></strong><span role="cell">${item.visibility === null || item.visibility === undefined ? '—' : `${formatNumber(item.visibility)}%`}</span><b role="cell">${item.share_of_voice === null || item.share_of_voice === undefined ? '—' : `${formatNumber(item.share_of_voice)}%`}</b><span role="cell">${item.average_source_position ? `#${formatNumber(item.average_source_position)}` : '—'}</span></div>`).join('')
+      : '<div class="ranking-empty">No brand ranking can be derived from this saved answer cohort.</div>';
+    $('#overview-rankings-provenance').textContent = provenanceText(evidence, 'one mention maximum per saved answer');
 
     const ranks = answers.map((answer) => Number(answer.best_source_rank)).filter((rank) => Number.isFinite(rank) && rank > 0);
-    const averageRank = ranks.length ? ranks.reduce((total, rank) => total + rank, 0) / ranks.length : null;
+    const averageRank = run.average_source_position ?? (ranks.length ? ranks.reduce((total, rank) => total + rank, 0) / ranks.length : null);
     $('#overview-average-position').textContent = averageRank === null ? '—' : `#${formatNumber(averageRank)}`;
     $('#overview-position-detail').textContent = averageRank === null
       ? 'Your domain did not appear in the measured source result sets.'
       : `${ranks.length} ranked appearance${ranks.length === 1 ? '' : 's'} · absent prompts are excluded.`;
-    const markerPosition = averageRank === null ? 0 : Math.max(0, Math.min(100, ((averageRank - 1) / 9) * 100));
-    $('#overview-position-marker').style.left = `${markerPosition}%`;
+    renderPositionTrend((evidence.history || []).filter((entry) => (
+      entry.provider === run.provider && entry.model === run.model &&
+      (!run.cohort_id || entry.cohort_id === run.cohort_id)
+    )));
+    $('#overview-position-provenance').textContent = provenanceText(evidence, 'ranked appearances only; lower is better');
 
     const competitors = (run.competitor_set || []).map((item) => item.name).filter(Boolean);
-    const shareOfVoice = competitors.length ? run.share_of_voice : null;
+    const trackedBrand = brandRankings.find((item) => item.tracked);
+    const shareOfVoice = competitors.length ? (trackedBrand?.share_of_voice ?? run.share_of_voice) : null;
     setOverviewPercent('overview-sov', 'overview-sov-unit', shareOfVoice);
     $('#overview-sov-detail').textContent = competitors.length
-      ? `Compared with ${competitors.join(', ')} across ${run.completed_count} completed answers.`
+      ? `Compared with ${competitors.join(', ')} across ${run.answer_measured_count ?? 0} measured answers.`
       : 'Add at least one competitor before measuring share of voice.';
-    $('#overview-sov-ring').style.setProperty('--sov', shareOfVoice ?? 0);
-    $('#overview-sov-ring').setAttribute('aria-label', shareOfVoice === null || shareOfVoice === undefined ? 'Share of voice unavailable' : `Brand share of voice ${formatNumber(shareOfVoice)} percent`);
+    renderShareOfVoice(brandRankings);
+    $('#overview-sov-provenance').textContent = provenanceText(evidence, 'share of mentions in the saved brand set');
   }
 
   function setAuditBusy(busy, progress = null) {
@@ -282,6 +419,11 @@ document.addEventListener('DOMContentLoaded', () => {
     renderSearchConsole(state.searchConsole, searchResult._error);
     renderTracking(state.tracking, trackingResult._error);
     renderEvidence(state.evidence, evidenceResult._error);
+    state.rag = auditResult.audit?.rag || null;
+    renderRag(state.rag, auditResult.audit?.run?.id);
+    if (auditResult.audit?.run?.id && Number(state.rag?.chunks_indexed) > 0) {
+      refreshRag(projectId, auditResult.audit.run.id);
+    }
     updateSetupProgress();
     if (searchResult._error || trackingResult._error || evidenceResult._error) {
       const firstError = searchResult._error || trackingResult._error || evidenceResult._error;
@@ -373,6 +515,58 @@ document.addEventListener('DOMContentLoaded', () => {
           return `<tr><td><div class="page-url">${link}<small>${esc(page.url)}</small></div></td><td>${fetchState}</td><td>${page.readiness_score === null ? 'Unavailable' : `${formatNumber(page.readiness_score)}%`}</td><td>${words}</td><td>${schema}</td><td>${formatNumber(page.issues_count, '—')}</td><td>${esc(formatDate(page.fetched_at))}</td></tr>`;
         }).join('')
       : '<tr><td colspan="7">Run a full audit to store selected-page evidence.</td></tr>';
+  }
+
+  function renderRag(rag, auditId, loadError = null) {
+    const form = $('#rag-question-form');
+    const button = $('#run-rag-question');
+    const stats = $('#rag-index-stats');
+    const answerState = $('#rag-answer-state');
+    const documents = Number(rag?.documents_indexed || 0);
+    const chunks = Number(rag?.chunks_indexed || 0);
+    const available = Boolean(auditId && chunks > 0);
+    form.dataset.auditId = auditId || '';
+    form.elements.question.disabled = !available;
+    button.disabled = !available;
+    stats.innerHTML = [
+      ['Documents', rag ? formatNumber(documents) : '—'],
+      ['Evidence chunks', rag ? formatNumber(chunks) : '—'],
+      ['Retrieval', rag?.retrieval_method || 'Not indexed'],
+    ].map(([label, value]) => `<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('');
+    $('#rag-scope-badge').textContent = (rag?.measurement_scope || 'content_analysis_only').replaceAll('_', ' ');
+    $('#rag-disclaimer').textContent = rag?.disclaimer || (
+      loadError?.message || 'Run a full audit to index normalized visible text from the selected public pages.'
+    );
+    if (!available) {
+      answerState.innerHTML = `<div class="rag-empty"><span aria-hidden="true">⌕</span><div><strong>${auditId ? 'No indexable page copy' : 'Run a full audit first'}</strong><p>${esc(loadError?.message || 'The deep audit becomes available after public page text has been fetched and indexed.')}</p></div></div>`;
+      return;
+    }
+    const insights = rag?.insights || [];
+    const insight = rag?.generated_insight || insights.at(-1);
+    if (!insight) {
+      answerState.innerHTML = '<div class="rag-empty"><span aria-hidden="true">✦</span><div><strong>The retrieval index is ready</strong><p>Ask a focused content question to create an evidence-grounded answer.</p></div></div>';
+      return;
+    }
+    const evidenceLinks = (insight.evidence || []).map((item) => {
+      const href = safeHref(item.url);
+      const title = item.title || item.url || item.evidence_ref;
+      const label = href
+        ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>`
+        : `<span>${esc(title)}</span>`;
+      return `<li><div>${label}<small>${esc(item.evidence_ref)} · passage ${Number(item.chunk_index || 0) + 1}</small></div><p>${esc(item.excerpt || 'Saved source passage')}</p></li>`;
+    }).join('');
+    answerState.innerHTML = `<article class="rag-insight"><header><div><span>Grounded answer</span><strong>${esc(insight.provider)} · ${esc(insight.model)}</strong></div><time>${esc(formatDate(insight.created_at))}</time></header><h3>${esc(insight.question)}</h3><p class="rag-answer-copy">${esc(insight.answer_text || 'No grounded answer was returned.')}</p><div class="rag-evidence"><strong>Source evidence</strong>${evidenceLinks ? `<ol>${evidenceLinks}</ol>` : '<p>No validated source passages were returned.</p>'}</div></article>`;
+  }
+
+  async function refreshRag(projectId, auditId) {
+    try {
+      const data = await apiRequest(`/api/v1/analytics/projects/${projectId}/rag?audit_id=${auditId}`);
+      if (projectId !== state.selectedProjectId || Number(auditId) !== Number(state.audit?.audit?.run?.id)) return;
+      state.rag = data.rag;
+      renderRag(state.rag, auditId);
+    } catch (error) {
+      if (projectId === state.selectedProjectId) renderRag(state.rag, auditId, error);
+    }
   }
 
   function renderSearchConsole(gsc, loadError) {
@@ -753,7 +947,12 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   const compareCompetitors = $('#compare-competitors');
   compareCompetitors.disabled = true;
-  compareCompetitors.title = 'Per-brand historical series are not available from the stored provider evidence yet.';
+  compareCompetitors.title = 'Compare the current saved answer cohort with configured competitors.';
+  compareCompetitors.addEventListener('click', () => {
+    const enabled = compareCompetitors.getAttribute('aria-checked') !== 'true';
+    compareCompetitors.setAttribute('aria-checked', String(enabled));
+    renderOverviewEvidence(state.evidence);
+  });
   $('#open-project-dialog').addEventListener('click', openProjectDialog);
   $('#empty-add-project').addEventListener('click', openProjectDialog);
   $('#sidebar-add-project').addEventListener('click', openProjectDialog);
@@ -822,6 +1021,34 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   $('#gsc-property-picker').addEventListener('change', async (event) => {
     await mutateAndReload(`/api/analytics/projects/${state.selectedProjectId}/search-console/property`, jsonOptions('PUT', { site_url: event.target.value }), 'search');
+  });
+
+  $('#rag-question-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = $('#run-rag-question');
+    const projectId = state.selectedProjectId;
+    const auditId = Number(form.dataset.auditId);
+    const question = form.elements.question.value.trim();
+    if (!projectId || !auditId || !question) return;
+    button.disabled = true;
+    button.textContent = 'Retrieving…';
+    $('#rag-answer-state').innerHTML = '<div class="rag-loading"><span class="loading-spinner" aria-hidden="true"></span><p>Retrieving saved crawl passages and grounding the answer…</p></div>';
+    try {
+      const data = await apiRequest(`/api/v1/analytics/projects/${projectId}/rag`, jsonOptions('POST', { audit_id: auditId, question }));
+      if (projectId !== state.selectedProjectId || auditId !== Number(state.audit?.audit?.run?.id)) return;
+      state.rag = data.rag;
+      renderRag(state.rag, auditId);
+      form.reset();
+    } catch (error) {
+      if (projectId === state.selectedProjectId) {
+        renderRag(state.rag, auditId);
+        $('#rag-answer-state').insertAdjacentHTML('afterbegin', `<p class="rag-error" role="alert">${esc(error.message)}</p>`);
+      }
+    } finally {
+      button.textContent = 'Deep audit';
+      button.disabled = projectId !== state.selectedProjectId || !Number(state.rag?.chunks_indexed);
+    }
   });
 
   $('#topic-form').addEventListener('submit', async (event) => {

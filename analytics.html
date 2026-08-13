@@ -198,7 +198,7 @@
                         <strong><span id="overview-answer-visibility">—</span><small id="overview-answer-visibility-unit">%</small></strong>
                         <small id="overview-visibility-delta">Provider evidence required</small>
                       </div>
-                      <div class="trend-chart searchable-chart" id="trend-chart" aria-label="Answer visibility history"></div>
+                      <div class="trend-chart searchable-chart" id="trend-chart" role="img" aria-label="Answer visibility history"></div>
                       <footer><span id="trend-current">No provider trend yet</span><button class="inline-switch" id="compare-competitors" type="button" role="switch" aria-checked="false"><span></span> Compare competitors</button></footer>
                     </article>
 
@@ -206,10 +206,13 @@
                       <header class="dashboard-panel-header">
                         <div><p><span class="panel-icon" aria-hidden="true">▥</span> Evidence rankings <span class="info-dot" title="Metrics calculated only from stored Perplexity evidence">i</span></p><small>Inspect the signals behind provider visibility</small></div>
                       </header>
-                      <div class="ranking-table-head"><span>#</span><span>Signal</span><span>Measured</span><span>Result</span></div>
-                      <div class="overview-rankings" id="overview-rankings">
-                        <div class="ranking-empty">Run a Perplexity prompt scan to populate provider evidence.</div>
+                      <div class="ranking-table" role="table" aria-label="Evidence-backed brand rankings">
+                        <div class="ranking-table-head" role="row"><span role="columnheader">#</span><span role="columnheader">Brand</span><span role="columnheader">Visibility</span><span role="columnheader">SOV</span><span role="columnheader">Avg source</span></div>
+                        <div class="overview-rankings" id="overview-rankings" role="rowgroup">
+                          <div class="ranking-empty">Run a Perplexity prompt scan to populate provider evidence.</div>
+                        </div>
                       </div>
+                      <footer class="panel-provenance" id="overview-rankings-provenance">No saved provider cohort.</footer>
                     </article>
 
                     <article class="dashboard-panel position-panel">
@@ -218,8 +221,9 @@
                         <button class="icon-button" type="button" data-sidebar-view="evidence" aria-label="Inspect ranked sources">▦</button>
                       </header>
                       <div class="position-value"><strong id="overview-average-position">—</strong><span>average rank</span></div>
-                      <div class="position-scale" aria-hidden="true"><span>1</span><span>5</span><span>10+</span><i id="overview-position-marker"></i></div>
+                      <div class="position-trend searchable-chart" id="overview-position-chart" role="img" aria-label="Average source position history"></div>
                       <p id="overview-position-detail">No ranked source appearances are available.</p>
+                      <footer class="panel-provenance" id="overview-position-provenance">No saved source-rank cohort.</footer>
                     </article>
 
                     <article class="dashboard-panel sov-panel">
@@ -229,8 +233,12 @@
                       </header>
                       <div class="sov-body">
                         <div><span>Average share of voice</span><strong><span id="overview-sov">—</span><small id="overview-sov-unit">%</small></strong><small id="overview-sov-detail">Add competitors and run a provider scan.</small></div>
-                        <div class="sov-ring" id="overview-sov-ring" style="--sov:0" role="img" aria-label="Share of voice unavailable"><span>trySearch</span></div>
+                        <div class="sov-chart-wrap">
+                          <div class="sov-ring" id="overview-sov-ring" role="img" aria-label="Share of voice unavailable"></div>
+                          <ul class="sov-legend" id="overview-sov-legend" aria-label="Share of voice breakdown"></ul>
+                        </div>
                       </div>
+                      <footer class="panel-provenance" id="overview-sov-provenance">No saved comparison cohort.</footer>
                     </article>
                   </section>
 
@@ -259,6 +267,19 @@
                 <div class="panel-heading"><div><p class="section-label">Multi-page audit</p><h1>Sources and audited pages</h1><p>Every row is derived from public HTML fetched during the selected crawl.</p></div><span class="baseline-badge">Public HTML</span></div>
                 <div class="panel-toolbar"><label class="table-search"><span aria-hidden="true">⌕</span><input type="search" placeholder="Search pages…" data-filter-table="page-audit-list" /></label><span class="filter-chip">Latest full audit</span><button class="toolbar-action" type="button" data-trigger-audit="true">↻ Run audit</button></div>
                 <div class="compact-metrics" id="page-audit-metrics"></div>
+                <article class="analytics-card deep-rag-card" id="deep-rag-card" aria-labelledby="deep-rag-title">
+                  <div class="deep-rag-heading">
+                    <div><p class="section-label">Retrieval-augmented audit</p><h2 id="deep-rag-title">Ask your audited website</h2><p>Retrieve relevant passages from the latest saved crawl, then generate a source-grounded answer.</p></div>
+                    <span class="baseline-badge" id="rag-scope-badge">Content analysis only</span>
+                  </div>
+                  <div class="rag-index-stats" id="rag-index-stats" aria-label="RAG index status"></div>
+                  <p class="rag-disclaimer" id="rag-disclaimer">Run a full audit to create a first-party retrieval index.</p>
+                  <form class="rag-question-form" id="rag-question-form">
+                    <label for="rag-question">Question about the audited pages</label>
+                    <div><textarea id="rag-question" name="question" rows="2" minlength="3" maxlength="1000" required placeholder="Which important customer questions are not answered clearly?"></textarea><button class="button button-primary" id="run-rag-question" type="submit">Deep audit</button></div>
+                  </form>
+                  <div class="rag-answer-state" id="rag-answer-state" role="status" aria-live="polite"></div>
+                </article>
                 <article class="analytics-card sitemap-card"><div class="card-title"><div><p class="section-label">Discovery</p><h2>Sitemap sources</h2></div></div><div id="sitemap-list" class="sitemap-list"></div></article>
                 <article class="analytics-card prompts-card"><div class="card-title"><div><p class="section-label">Page evidence</p><h2>Audited URLs</h2></div><span class="prompt-count" id="page-count"></span></div><div class="table-scroll"><table><thead><tr><th>Page</th><th>Fetch</th><th>Readiness</th><th>Words</th><th>Schema</th><th>Issues</th><th>Fetched</th></tr></thead><tbody id="page-audit-list"></tbody></table></div></article>
               </section>

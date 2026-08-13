@@ -1,11 +1,12 @@
 # trySearch AI Search Analytics setup
 
-The dashboard now keeps four sources separate:
+The dashboard keeps measured sources separate from analysis layers:
 
 1. **Website crawl** — public HTML, robots.txt, sitemaps, metadata, headings, JSON-LD, canonical and indexing signals.
 2. **Google Search Console** — query, page, clicks, impressions, CTR and position from a property the signed-in user authorizes.
 3. **Perplexity evidence** — the exact tracked prompt, ranked Search API results, Agent API answer, source annotations, provider IDs, returned model and scan time.
-4. **Open-weight analysis** — an optional Hugging Face-hosted model that converts stored evidence IDs into content opportunities. It never produces visibility metrics.
+4. **Crawl-grounded RAG** — retrieval over the normalized public copy saved by one website audit, with every generated insight linked to one or more `chunk:<id>` records.
+5. **Open-weight analysis** — an optional Hugging Face-hosted model that converts stored crawl or provider evidence into grounded actions. It never produces visibility metrics.
 
 An unavailable page, revoked OAuth token, missing API key, or failed provider request is stored as an error state. It is not converted into a measured 0% score.
 
@@ -43,6 +44,29 @@ Add topics, competitors, and tracked prompts in **Analytics → Prompts**, then 
 These metrics describe the configured Perplexity APIs and prompt set. They are not claims about Perplexity.com, ChatGPT, Claude, or Google AI Overviews.
 
 The default cost guard allows 25 active prompts per provider scan and retains up to 100 tracked prompts per project. Both limits are configurable with `PERPLEXITY_MAX_PROMPTS_PER_SCAN` and `ANALYTICS_MAX_TRACKED_PROMPTS`.
+
+### Exact dashboard metric definitions
+
+- **Answer visibility** is the percentage of non-empty saved Agent answers that mention a configured or domain-derived tracked-brand alias. Failed or Search-only results are unavailable, not negative answers.
+- **Evidence rankings** order the tracked brand and the competitor set saved with that scan by answer visibility. Each entity can contribute at most one mention per answer. The table also exposes share of voice and source position from the same saved cohort.
+- **Share of voice** is the tracked brand's entity-answer mentions divided by all entity-answer mentions for the tracked brand plus the scan-time competitor set. It is not general market share.
+- **Average source position** is the arithmetic mean of the tracked domain's best rank in saved Perplexity Search result sets where the domain appeared. Missing appearances are excluded and the dashboard shows the appearance count.
+
+Historical changes are comparable only when provider, returned model, region, prompt text set, and competitor set match. The API emits a `cohort_id` for this purpose. Partial runs retain metric-specific denominators and should not be presented as full-cohort changes.
+
+## Crawl-grounded RAG deep audit
+
+Every successful multi-page audit stores a bounded copy of the visible page text, splits it into overlapping chunks, and creates a local sparse BM25-style retrieval index. Scripts, styles, and raw HTML are not added to the RAG corpus. The API is authenticated and project-scoped:
+
+```text
+GET  /api/v1/analytics/projects/<project_id>/rag?query=<question>
+POST /api/v1/analytics/projects/<project_id>/rag
+     {"question": "What sourceable proof does this site expose?", "audit_id": optional}
+```
+
+When Hugging Face or Ollama is configured, the model receives only the retrieved crawl chunks. A response is accepted only if it cites one or more supplied `chunk:<id>` references. If the model is unavailable or returns an invalid response, trySearch falls back to an extractive answer that preserves the same source references.
+
+RAG deepens the first-party content audit and recommendations. It does **not** make or update Answer visibility, Evidence rankings, Share of voice, or Average source position; those require stored third-party Perplexity evidence. The RAG corpus is refreshed when a new full website audit runs, not continuously between audits.
 
 ## Open-weight model
 
@@ -103,6 +127,12 @@ GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
 GOOGLE_OAUTH_REDIRECT_URI
 OAUTH_TOKEN_ENCRYPTION_KEY
+RAG_DOCUMENT_MAX_CHARS
+RAG_CHUNK_WORDS
+RAG_CHUNK_OVERLAP_WORDS
+RAG_MAX_CHUNKS_PER_PAGE
+RAG_DEFAULT_TOP_K
+RAG_MAX_CONTEXT_CHARS
 ```
 
 After deployment, open AI Search Analytics. The source status strip should show each integration as connected, unconfigured, running, or failed independently.
