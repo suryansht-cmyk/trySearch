@@ -1,7 +1,8 @@
-searchable.db
-__pycache__/
 *.pyc
 .DS_Store
 .env
-.env.local
 .env.*.local
+.env.local
+__pycache__/
+message.jpg
+searchable.db
