@@ -22,6 +22,7 @@ from sqlalchemy import (
 )
 import json
 import os
+import random
 import time
 
 from app.config import PERPLEXITY_MAX_PROMPTS_PER_SCAN
@@ -39,6 +40,44 @@ from app.routes.pages import index
 def next_schedule_time(frequency, from_time=None):
     from_time = from_time or datetime.utcnow()
     return from_time + {'daily': timedelta(days=1), 'weekly': timedelta(days=7), 'monthly': timedelta(days=30)}[frequency]
+
+# Individual answers retry; the fan-out parent never does. A provider blip should
+# cost one answer, not the whole run, and a run that genuinely failed should not be
+# re-dispatched in a loop.
+ANSWER_RETRY_ATTEMPTS = max(1, min(int(os.environ.get('ANSWER_RETRY_ATTEMPTS', '3')), 6))
+ANSWER_RETRY_BASE_SECONDS = 0.5
+
+
+def batched(items, size):
+    """Yield successive lists of at most `size` items."""
+    size = max(1, size)
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
+
+
+def retry_delay(attempt):
+    """Exponential backoff with full jitter, so retries do not synchronise."""
+    ceiling = ANSWER_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+    return random.uniform(0, min(ceiling, 8.0))
+
+
+def call_with_retries(call, *args, attempts=None):
+    """Return (payload, error_message). Never raises past its own boundary.
+
+    Retries only the provider call for a single answer. The caller records the
+    error as evidence and carries on to the next prompt.
+    """
+    attempts = attempts or ANSWER_RETRY_ATTEMPTS
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return call(*args), None
+        except ProviderAPIError as error:
+            last_error = error
+            if attempt < attempts:
+                time.sleep(retry_delay(attempt))
+    return None, f'{last_error} (after {attempts} attempts)'
+
 
 def persist_provider_answer(scan_id, prompt, project, search_payload, answer_payload, errors, latency_ms):
     answer_text = perplexity_answer_text(answer_payload or {})
@@ -106,13 +145,6 @@ def run_prompt_scan_job(job_id):
     if not project or not prompts:
         update_analytics_job(job_id, status='failed_terminal', progress=100, error='Add at least one active tracked prompt first.', completed_at=datetime.utcnow())
         return
-    if len(prompts) > PERPLEXITY_MAX_PROMPTS_PER_SCAN:
-        update_analytics_job(
-            job_id, status='failed_terminal', progress=100,
-            error=f'Pause prompts until no more than {PERPLEXITY_MAX_PROMPTS_PER_SCAN} are active for one provider scan.',
-            completed_at=datetime.utcnow(),
-        )
-        return
     if not os.environ.get('PERPLEXITY_API_KEY'):
         update_analytics_job(job_id, status='failed_terminal', progress=100, error='PERPLEXITY_API_KEY is not configured.', completed_at=datetime.utcnow())
         return
@@ -157,24 +189,18 @@ def run_prompt_scan_job(job_id):
             analytics_prompt_scan_runs.c.job_id == job_id
         )).scalar_one_or_none()
         if existing_run:
+            # Resuming an interrupted run. Answers already collected are kept: they
+            # are immutable evidence and they have already been paid for. Deleting
+            # them and starting over would re-submit every successful call, which is
+            # exactly the double-charge architecture-spec 4 rule 2 forbids.
             scan_id = existing_run
-            existing_answer_ids = [row[0] for row in conn.execute(select(analytics_provider_answers.c.id).where(
-                analytics_provider_answers.c.scan_run_id == scan_id
-            )).all()]
-            if existing_answer_ids:
-                conn.execute(analytics_answer_sources.delete().where(
-                    analytics_answer_sources.c.answer_id.in_(existing_answer_ids)
-                ))
-            conn.execute(analytics_provider_answers.delete().where(
-                analytics_provider_answers.c.scan_run_id == scan_id
-            ))
             conn.execute(analytics_content_opportunities.delete().where(
                 analytics_content_opportunities.c.scan_run_id == scan_id
             ))
             conn.execute(update(analytics_prompt_scan_runs).where(
                 analytics_prompt_scan_runs.c.id == scan_id
             ).values(
-                status='running', prompt_count=len(prompts), completed_count=0,
+                status='running', prompt_count=len(prompts),
                 competitor_snapshot=competitor_snapshot,
                 mention_rate=None, citation_rate=None, source_presence_rate=None,
                 share_of_voice=None, recommendation_summary=None, error=None,
@@ -195,32 +221,48 @@ def run_prompt_scan_job(job_id):
             total_items=len(prompts), completed_items=0, progress=0,
         ))
 
+    with engine.connect() as conn:
+        answered_prompt_ids = {
+            row[0] for row in conn.execute(select(analytics_provider_answers.c.prompt_id).where(
+                analytics_provider_answers.c.scan_run_id == scan_id
+            )).all()
+        }
+    pending = [prompt for prompt in prompts if prompt['id'] not in answered_prompt_ids]
+
     failures = []
-    for index, prompt in enumerate(prompts, 1):
-        started = time.monotonic()
-        search_payload = None
-        answer_payload = None
-        errors = []
-        try:
-            search_payload = call_perplexity_search(prompt['prompt'], region)
-        except ProviderAPIError as error:
-            errors.append(f'Search API: {error}')
-        try:
-            answer_payload = call_perplexity_answer(prompt['prompt'])
-            if not perplexity_answer_text(answer_payload):
+    index = len(answered_prompt_ids)
+    # A 300-prompt workspace becomes 12 sequential batches of 25 rather than a 409.
+    # The batch boundary is where progress is committed, so killing the worker
+    # mid-run loses at most one batch of work, never the run.
+    for batch in batched(pending, PERPLEXITY_MAX_PROMPTS_PER_SCAN):
+        for prompt in batch:
+            index += 1
+            started = time.monotonic()
+            errors = []
+            search_payload, search_error = call_with_retries(
+                call_perplexity_search, prompt['prompt'], region)
+            if search_error:
+                errors.append(f'Search API: {search_error}')
+            answer_payload, answer_error = call_with_retries(
+                call_perplexity_answer, prompt['prompt'])
+            if answer_error:
+                errors.append(f'Agent API: {answer_error}')
+            elif not perplexity_answer_text(answer_payload):
                 errors.append('Agent API: completed without answer text')
-        except ProviderAPIError as error:
-            errors.append(f'Agent API: {error}')
-        if errors:
-            failures.append(f"Prompt {prompt['id']}: {'; '.join(errors)}")
-        persist_provider_answer(
-            scan_id, prompt, project, search_payload, answer_payload, errors,
-            round((time.monotonic() - started) * 1000),
+            if errors:
+                failures.append(f"Prompt {prompt['id']}: {'; '.join(errors)}")
+            # The row is written whatever happened, so a failed answer is recorded
+            # evidence rather than a silent gap.
+            persist_provider_answer(
+                scan_id, prompt, project, search_payload, answer_payload, errors,
+                round((time.monotonic() - started) * 1000),
+            )
+            if index < len(prompts):
+                time.sleep(max(0, min(float(os.environ.get('PERPLEXITY_REQUEST_DELAY_SECONDS', '0.2')), 3)))
+        update_analytics_job(
+            job_id, completed_items=index, total_items=len(prompts),
+            progress=round(index / len(prompts) * 100),
         )
-        progress = round(index / len(prompts) * 100)
-        update_analytics_job(job_id, completed_items=index, total_items=len(prompts), progress=progress)
-        if index < len(prompts):
-            time.sleep(max(0, min(float(os.environ.get('PERPLEXITY_REQUEST_DELAY_SECONDS', '0.2')), 3)))
 
     evidence_rows = provider_evidence_rows(scan_id)
     returned_models = list(dict.fromkeys(row['model'] for row in evidence_rows if row.get('model')))

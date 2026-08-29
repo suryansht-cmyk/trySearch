@@ -24,13 +24,11 @@ from sqlalchemy import (
 import json
 import os
 
-from app.config import PERPLEXITY_MAX_PROMPTS_PER_SCAN
 from app.db import engine
-from app.jobs import create_analytics_job, start_background_analytics_job
+from app.jobs import create_analytics_job
 from app.metrics import latest_prompt_evidence
 from app.models import analytics_answer_sources, analytics_audit_jobs, analytics_prompt_scan_runs, analytics_provider_answers, analytics_topics, analytics_tracked_prompts
 from app.tenancy import require_workspace
-from app.scanning import run_prompt_scan_job
 from app.utils import row_to_dict
 
 evidence_bp = Blueprint('evidence', __name__)
@@ -55,12 +53,11 @@ def start_analytics_prompt_scan(workspace_id):
         ).order_by(desc(analytics_audit_jobs.c.created_at)).limit(1)).mappings().first()
     if not prompt_count:
         return jsonify({'error': 'Add at least one active tracked prompt first.'}), 409
-    if prompt_count > PERPLEXITY_MAX_PROMPTS_PER_SCAN:
-        return jsonify({'error': f'Pause prompts until no more than {PERPLEXITY_MAX_PROMPTS_PER_SCAN} are active for one provider scan.'}), 409
     if active:
         return jsonify({'status': 'accepted', 'job': row_to_dict(active)}), 202
+    # Enqueue only. The CLI worker executes it; nothing runs inside the web
+    # process, so a scan cannot block a gunicorn thread or die on deploy.
     job_id = create_analytics_job(project, 'prompt_scan', provider='Perplexity')
-    start_background_analytics_job(job_id, run_prompt_scan_job)
     return jsonify({'status': 'accepted', 'job_id': job_id}), 202
 
 @evidence_bp.route('/api/analytics/projects/<int:workspace_id>/evidence', methods=['GET'])

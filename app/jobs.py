@@ -20,7 +20,6 @@ from sqlalchemy import (
     func,
     text,
 )
-import threading
 
 from app.crawler.crawl import crawl_website
 from app.db import engine
@@ -204,26 +203,3 @@ def run_site_audit_job(job_id):
         )
     except Exception as error:  # A durable status is more useful than a dropped worker traceback.
         update_analytics_job(job_id, status='failed_retryable', error=str(error)[:2000], completed_at=datetime.utcnow())
-
-_analytics_threads = set()
-
-_analytics_threads_lock = threading.Lock()
-
-def start_background_analytics_job(job_id, target):
-    """Start low-volume on-demand work; the CLI worker remains the recovery path."""
-    def runner():
-        try:
-            target(job_id)
-        except Exception as error:
-            update_analytics_job(
-                job_id, status='failed_retryable', error=str(error)[:2000],
-                completed_at=datetime.utcnow(),
-            )
-        finally:
-            with _analytics_threads_lock:
-                _analytics_threads.discard(threading.current_thread())
-
-    worker = threading.Thread(target=runner, name=f'analytics-job-{job_id}', daemon=True)
-    with _analytics_threads_lock:
-        _analytics_threads.add(worker)
-    worker.start()

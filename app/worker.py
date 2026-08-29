@@ -86,8 +86,18 @@ def run_scheduled_analytics_command():
                 run_prompt_scan_job(job_id)
                 processed += 1
         except Exception as error:
+            # architecture-spec 4 rule 2: retry limit zero at the job level for
+            # fan-outs. A prompt_scan that raised has already paid for the answers
+            # it completed, and re-dispatching would buy them all again. A site
+            # audit fans out to nothing paid, so it stays retryable.
+            #
+            # This is not the recovery path for a killed worker: that leaves the row
+            # in 'running' with no exception, and the 45-minute stale lease above
+            # requeues it. The resumed run skips prompts already answered, so it
+            # costs only the remainder.
+            status = 'failed_terminal' if job_type == 'prompt_scan' else 'failed_retryable'
             update_analytics_job(
-                job_id, status='failed_retryable', error=str(error)[:2000],
+                job_id, status=status, error=str(error)[:2000],
                 completed_at=datetime.utcnow(),
             )
     print(f'Analytics worker queued {scheduled_count} scheduled scan(s) and processed {processed} job(s).')

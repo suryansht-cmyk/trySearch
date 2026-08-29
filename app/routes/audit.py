@@ -25,7 +25,7 @@ import re
 
 from app.auth import analytics_user_id
 from app.db import engine
-from app.jobs import create_analytics_job, latest_site_audit, run_site_audit_job, start_background_analytics_job
+from app.jobs import create_analytics_job, latest_site_audit
 from app.models import analytics_audit_jobs, analytics_site_audits
 from app.tenancy import require_job, require_workspace
 from app.rag.answers import create_rag_insight
@@ -49,8 +49,8 @@ def start_site_audit(workspace_id):
         ).order_by(desc(analytics_audit_jobs.c.created_at)).limit(1)).mappings().first()
     if active:
         return jsonify({'status': 'accepted', 'job': row_to_dict(active)}), 202
+    # Enqueue only; the CLI worker runs the crawl.
     job_id = create_analytics_job(project, 'site_audit')
-    start_background_analytics_job(job_id, run_site_audit_job)
     return jsonify({'status': 'accepted', 'job_id': job_id}), 202
 
 @audit_bp.route('/api/analytics/jobs/<int:job_id>', methods=['GET'])
