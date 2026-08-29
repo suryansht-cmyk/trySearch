@@ -25,9 +25,9 @@ import re
 
 from app.auth import analytics_user_id
 from app.db import engine
-from app.jobs import analytics_job_for_user, create_analytics_job, latest_site_audit, run_site_audit_job, start_background_analytics_job
+from app.jobs import create_analytics_job, latest_site_audit, run_site_audit_job, start_background_analytics_job
 from app.models import analytics_audit_jobs, analytics_site_audits
-from app.ownership import ensure_workspace_access, workspace_for_user
+from app.tenancy import require_job, require_workspace
 from app.rag.answers import create_rag_insight
 from app.rag.index import rag_index_summary
 from app.rag.ranking import retrieve_audit_chunks
@@ -37,12 +37,10 @@ audit_bp = Blueprint('audit', __name__)
 
 @audit_bp.route('/api/analytics/projects/<int:workspace_id>/audits', methods=['POST'])
 def start_site_audit(workspace_id):
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
-    project = workspace_for_user(workspace_id, user_id)
-    if not project:
-        return jsonify({'error': 'Project not found.'}), 404
+    access, error = require_workspace(workspace_id)
+    if error:
+        return error
+    user_id, project = access.user_id, access.workspace
     with engine.connect() as conn:
         active = conn.execute(select(analytics_audit_jobs).where(
             (analytics_audit_jobs.c.workspace_id == workspace_id) &
@@ -57,22 +55,17 @@ def start_site_audit(workspace_id):
 
 @audit_bp.route('/api/analytics/jobs/<int:job_id>', methods=['GET'])
 def analytics_job_status(job_id):
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
-    job = analytics_job_for_user(job_id, user_id)
-    if not job:
-        return jsonify({'error': 'Analytics job not found.'}), 404
-    return jsonify({'job': job})
+    _access, job, error = require_job(job_id)
+    if error:
+        return error
+    return jsonify({'job': row_to_dict(job)})
 
 @audit_bp.route('/api/analytics/projects/<int:workspace_id>/audit', methods=['GET'])
 def site_audit_report_endpoint(workspace_id):
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
-    project = workspace_for_user(workspace_id, user_id)
-    if not project:
-        return jsonify({'error': 'Project not found.'}), 404
+    access, error = require_workspace(workspace_id)
+    if error:
+        return error
+    user_id, project = access.user_id, access.workspace
     audit = latest_site_audit(workspace_id)
     with engine.connect() as conn:
         active_job = conn.execute(select(analytics_audit_jobs).where(
@@ -112,9 +105,10 @@ def rag_retrieval_payload(rows):
 @audit_bp.route('/api/v1/analytics/projects/<int:workspace_id>/rag', methods=['GET', 'POST'])
 def analytics_rag_endpoint(workspace_id):
     """Retrieve or synthesize crawl-grounded insights without changing measured metrics."""
-    _user_id, project, error = ensure_workspace_access(workspace_id)
+    access, error = require_workspace(workspace_id)
     if error:
         return error
+    project = access.workspace
     data = (request.get_json(silent=True) or {}) if request.method == 'POST' else {}
     if not isinstance(data, dict):
         return jsonify({'error': 'The request body must be a JSON object.'}), 400

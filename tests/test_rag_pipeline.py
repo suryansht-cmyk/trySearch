@@ -21,10 +21,6 @@ from sqlalchemy import func, insert, select  # noqa: E402
 
 
 class RagPipelineTests(unittest.TestCase):
-    @classmethod
-    def tearDownClass(cls):
-        db.engine.dispose()
-
     def test_visible_copy_chunking_is_bounded_and_overlapping(self):
         content = ' '.join(f'word{index}' for index in range(55))
         chunks = chunking.chunk_visible_text(

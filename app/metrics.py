@@ -28,12 +28,12 @@ from app.db import engine, metadata
 from app.extraction.mentions import domain_matches, project_brand_aliases, text_mentions_alias
 from app.jobs import latest_site_audit
 from app.models import analytics_answer_sources, analytics_content_opportunities, workspaces, analytics_prompt_scan_runs, analytics_provider_answers, analytics_topics, analytics_tracked_prompts
-from app.ownership import workspace_for_user
+from app.tenancy import workspace_for_member
 from app.utils import row_to_dict
 
 
 def analytics_report(workspace_id, user_id):
-    project = workspace_for_user(workspace_id, user_id)
+    project = workspace_for_member(workspace_id, user_id)
     if not project:
         return None
     site_audit = latest_site_audit(workspace_id)

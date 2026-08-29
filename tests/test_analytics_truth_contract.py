@@ -18,7 +18,7 @@ from app.crawler import fetch  # noqa: E402
 from app import jobs  # noqa: E402
 from app import metrics  # noqa: E402
 from app import models  # noqa: E402
-from app import ownership  # noqa: E402
+from app import tenancy  # noqa: E402
 from app import scanning  # noqa: E402
 
 
@@ -271,7 +271,7 @@ class AnalyticsTruthContractTests(unittest.TestCase):
                     'updated_at': now,
                 },
             ])
-        project = ownership.workspace_for_user(workspace_id, 91003)
+        project = tenancy.workspace_for_member(workspace_id, 91003)
         job_id = jobs.create_analytics_job(project, 'prompt_scan', provider='Perplexity')
         search_payloads = [
             {

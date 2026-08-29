@@ -23,14 +23,9 @@ from sqlalchemy import (
     text,
 )
 
-from app.auth import analytics_user_id
 from app.db import engine
 from app.models import content_documents
-from app.ownership import (
-    content_document_for_user,
-    content_documents_for_user,
-    workspace_for_user,
-)
+from app.tenancy import current_user_id, documents_for_user, require_document, require_workspace
 from app.utils import row_to_dict
 
 content_bp = Blueprint('content', __name__)
@@ -103,9 +98,9 @@ Start with the workflow where the gap is most visible, then validate your approa
 
 @content_bp.route('/api/content-studio/documents', methods=['GET', 'POST'])
 def content_documents_endpoint():
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
+    user_id, error = current_user_id()
+    if error:
+        return error
     if request.method == 'POST':
         data = request.get_json(silent=True) or {}
         title = (data.get('title') or '').strip()
@@ -123,8 +118,11 @@ def content_documents_endpoint():
         # created against a bare user. The caller has to say which workspace, and it
         # has to be one their org membership reaches.
         workspace_id = data.get('workspace_id')
-        if not workspace_id or not workspace_for_user(workspace_id, user_id):
+        if not workspace_id:
             return jsonify({'error': 'Choose a workspace you have access to.'}), 400
+        _access, error = require_workspace(workspace_id)
+        if error:
+            return error
         now = datetime.utcnow()
         with engine.begin() as conn:
             result = conn.execute(insert(content_documents).values(
@@ -133,18 +131,18 @@ def content_documents_endpoint():
                 outline='', recommendations='', status='Brief', version=0, created_at=now, updated_at=now,
             ))
             document_id = result.inserted_primary_key[0]
-        return jsonify({'status': 'success', 'document': row_to_dict(content_document_for_user(document_id, user_id))}), 201
-    documents = [row_to_dict(row) for row in content_documents_for_user(user_id)]
+        _access, document, error = require_document(document_id)
+        if error:
+            return error
+        return jsonify({'status': 'success', 'document': row_to_dict(document)}), 201
+    documents = [row_to_dict(row) for row in documents_for_user(user_id)]
     return jsonify({'documents': documents})
 
 @content_bp.route('/api/content-studio/documents/<int:document_id>', methods=['GET', 'PATCH', 'DELETE'])
 def content_document_endpoint(document_id):
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
-    document = content_document_for_user(document_id, user_id)
-    if not document:
-        return jsonify({'error': 'Content document not found.'}), 404
+    _access, document, error = require_document(document_id)
+    if error:
+        return error
     if request.method == 'GET':
         return jsonify({'document': row_to_dict(document)})
     if request.method == 'DELETE':
@@ -171,19 +169,16 @@ def content_document_endpoint(document_id):
     updates['version'] = document['version'] + 1
     with engine.begin() as conn:
         conn.execute(content_documents.update().where(content_documents.c.id == document_id).values(**updates))
-    return jsonify({'status': 'success', 'document': row_to_dict(content_document_for_user(document_id, user_id))})
+    return jsonify({'status': 'success', 'document': row_to_dict(require_document(document_id, write=False)[1])})
 
 @content_bp.route('/api/content-studio/documents/<int:document_id>/generate', methods=['POST'])
 def generate_content_document(document_id):
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
-    document = content_document_for_user(document_id, user_id)
-    if not document:
-        return jsonify({'error': 'Content document not found.'}), 404
+    _access, document, error = require_document(document_id)
+    if error:
+        return error
     draft = make_content_draft(document)
     with engine.begin() as conn:
         conn.execute(content_documents.update().where(content_documents.c.id == document_id).values(
             **draft, status='Draft', version=document['version'] + 1, updated_at=datetime.utcnow()
         ))
-    return jsonify({'status': 'success', 'document': row_to_dict(content_document_for_user(document_id, user_id))})
+    return jsonify({'status': 'success', 'document': row_to_dict(require_document(document_id, write=False)[1])})

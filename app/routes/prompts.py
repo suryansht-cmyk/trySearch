@@ -30,7 +30,7 @@ from app.config import ANALYTICS_MAX_TRACKED_PROMPTS
 from app.db import engine
 from app.llm import open_model_settings
 from app.models import competitors, analytics_scan_schedules, analytics_topics, analytics_tracked_prompts
-from app.ownership import ensure_workspace_access
+from app.tenancy import require_workspace
 from app.scanning import next_schedule_time
 from app.utils import normalise_domain, row_to_dict
 
@@ -75,14 +75,15 @@ def analytics_tracking_payload(workspace_id):
 
 @prompts_bp.route('/api/analytics/projects/<int:workspace_id>/tracking', methods=['GET'])
 def analytics_tracking_endpoint(workspace_id):
-    _user_id, project, error = ensure_workspace_access(workspace_id)
+    access, error = require_workspace(workspace_id)
     if error:
         return error
+    project = access.workspace
     return jsonify({'project': row_to_dict(project), 'tracking': analytics_tracking_payload(workspace_id)})
 
 @prompts_bp.route('/api/analytics/projects/<int:workspace_id>/topics', methods=['POST'])
 def create_analytics_topic(workspace_id):
-    _user_id, _project, error = ensure_workspace_access(workspace_id)
+    access, error = require_workspace(workspace_id)
     if error:
         return error
     name = ((request.get_json(silent=True) or {}).get('name') or '').strip()
@@ -101,7 +102,7 @@ def create_analytics_topic(workspace_id):
 
 @prompts_bp.route('/api/analytics/projects/<int:workspace_id>/topics/<int:topic_id>', methods=['DELETE'])
 def delete_analytics_topic(workspace_id, topic_id):
-    _user_id, _project, error = ensure_workspace_access(workspace_id)
+    access, error = require_workspace(workspace_id)
     if error:
         return error
     with engine.begin() as conn:
@@ -118,7 +119,7 @@ def delete_analytics_topic(workspace_id, topic_id):
 
 @prompts_bp.route('/api/analytics/projects/<int:workspace_id>/competitors', methods=['POST'])
 def create_analytics_competitor(workspace_id):
-    _user_id, _project, error = ensure_workspace_access(workspace_id)
+    access, error = require_workspace(workspace_id)
     if error:
         return error
     data = request.get_json(silent=True) or {}
@@ -146,7 +147,7 @@ def create_analytics_competitor(workspace_id):
 
 @prompts_bp.route('/api/analytics/projects/<int:workspace_id>/competitors/<int:competitor_id>', methods=['DELETE'])
 def delete_analytics_competitor(workspace_id, competitor_id):
-    _user_id, _project, error = ensure_workspace_access(workspace_id)
+    access, error = require_workspace(workspace_id)
     if error:
         return error
     with engine.begin() as conn:
@@ -160,7 +161,7 @@ def delete_analytics_competitor(workspace_id, competitor_id):
 
 @prompts_bp.route('/api/analytics/projects/<int:workspace_id>/tracked-prompts', methods=['POST'])
 def create_analytics_tracked_prompt(workspace_id):
-    _user_id, _project, error = ensure_workspace_access(workspace_id)
+    access, error = require_workspace(workspace_id)
     if error:
         return error
     data = request.get_json(silent=True) or {}
@@ -194,7 +195,7 @@ def create_analytics_tracked_prompt(workspace_id):
 
 @prompts_bp.route('/api/analytics/projects/<int:workspace_id>/tracked-prompts/<int:prompt_id>', methods=['PATCH', 'DELETE'])
 def update_analytics_tracked_prompt(workspace_id, prompt_id):
-    _user_id, _project, error = ensure_workspace_access(workspace_id)
+    access, error = require_workspace(workspace_id)
     if error:
         return error
     with engine.connect() as conn:
@@ -223,7 +224,7 @@ def update_analytics_tracked_prompt(workspace_id, prompt_id):
 
 @prompts_bp.route('/api/analytics/projects/<int:workspace_id>/scan-schedule', methods=['PUT'])
 def update_analytics_scan_schedule(workspace_id):
-    _user_id, _project, error = ensure_workspace_access(workspace_id)
+    access, error = require_workspace(workspace_id)
     if error:
         return error
     data = request.get_json(silent=True) or {}

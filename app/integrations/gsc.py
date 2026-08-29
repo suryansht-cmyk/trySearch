@@ -30,7 +30,7 @@ from app.auth import analytics_user_id
 from app.db import engine
 from app.http_client import ProviderAPIError, external_json_request
 from app.models import memberships, workspaces, gsc_connections, gsc_properties, gsc_query_rows, gsc_sync_runs
-from app.ownership import workspace_for_user
+from app.tenancy import current_user_id, require_workspace, workspace_for_member
 from app.utils import normalise_domain, row_to_dict
 
 gsc_bp = Blueprint('gsc', __name__)
@@ -165,15 +165,21 @@ def gsc_report(workspace_id, user_id):
 
 @gsc_bp.route('/api/analytics/integrations/google/start', methods=['GET'])
 def start_google_search_console_oauth():
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
+    # Authentication first, so an anonymous caller still gets 401 rather than a
+    # 400 about a query argument they were never entitled to use.
+    _user_id, error = current_user_id()
+    if error:
+        return error
     try:
         workspace_id = int(request.args.get('workspace_id', ''))
     except ValueError:
         return jsonify({'error': 'A valid workspace_id is required.'}), 400
-    if not workspace_for_user(workspace_id, user_id):
-        return jsonify({'error': 'Project not found.'}), 404
+    # Starting an OAuth flow grants this workspace access to a Google account, so
+    # it is a write even though the request is a GET.
+    access, error = require_workspace(workspace_id, write=True)
+    if error:
+        return error
+    user_id = access.user_id
     if not google_search_console_configured():
         return jsonify({'error': 'Google Search Console is not configured on this server.'}), 503
     try:
@@ -193,16 +199,21 @@ def start_google_search_console_oauth():
 
 @gsc_bp.route('/api/analytics/integrations/google/callback', methods=['GET'])
 def google_search_console_oauth_callback():
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
+    _user_id, error = current_user_id()
+    if error:
+        return error
+    # State is validated before the workspace lookup: the workspace id comes from
+    # the session, not the query string, so a forged callback cannot name one.
     expected_state = session.pop('gsc_oauth_state', None)
     workspace_id = session.pop('gsc_oauth_project_id', None)
     if not expected_state or not secrets.compare_digest(request.args.get('state', ''), expected_state):
         return jsonify({'error': 'Google OAuth state validation failed.'}), 400
-    project = workspace_for_user(workspace_id, user_id)
-    if not project:
-        return jsonify({'error': 'Project not found.'}), 404
+    # Membership is re-checked here rather than trusted from the start of the flow:
+    # a user can be removed from the org between the redirect out and the return.
+    access, error = require_workspace(workspace_id, write=True)
+    if error:
+        return error
+    user_id, project = access.user_id, access.workspace
     if request.args.get('error'):
         return redirect(f'/analytics?project={workspace_id}&gsc=denied')
     code = request.args.get('code')
@@ -270,11 +281,10 @@ def google_search_console_oauth_callback():
 
 @gsc_bp.route('/api/analytics/projects/<int:workspace_id>/search-console', methods=['GET', 'DELETE'])
 def search_console_connection_endpoint(workspace_id):
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
-    if not workspace_for_user(workspace_id, user_id):
-        return jsonify({'error': 'Project not found.'}), 404
+    access, error = require_workspace(workspace_id)
+    if error:
+        return error
+    user_id = access.user_id
     if request.method == 'DELETE':
         connection = gsc_connection_for_project(workspace_id, user_id)
         if connection:
@@ -292,9 +302,10 @@ def search_console_connection_endpoint(workspace_id):
 
 @gsc_bp.route('/api/analytics/projects/<int:workspace_id>/search-console/property', methods=['PUT'])
 def select_search_console_property(workspace_id):
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
+    access, error = require_workspace(workspace_id)
+    if error:
+        return error
+    user_id = access.user_id
     connection = gsc_connection_for_project(workspace_id, user_id)
     if not connection:
         return jsonify({'error': 'Connect Google Search Console first.'}), 409
@@ -315,9 +326,10 @@ def select_search_console_property(workspace_id):
 
 @gsc_bp.route('/api/analytics/projects/<int:workspace_id>/search-console/sync', methods=['POST'])
 def sync_search_console(workspace_id):
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
+    access, error = require_workspace(workspace_id)
+    if error:
+        return error
+    user_id = access.user_id
     connection = gsc_connection_for_project(workspace_id, user_id)
     if not connection:
         return jsonify({'error': 'Connect Google Search Console first.'}), 409

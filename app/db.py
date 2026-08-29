@@ -7,6 +7,7 @@ import os
 import uuid
 
 from sqlalchemy import MetaData, create_engine, insert, select
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.exc import IntegrityError
 
 from app.config import IS_PRODUCTION, SQLITE_PATH
@@ -34,6 +35,14 @@ DB_URL = normalize_database_url(database_url)
 engine_options = {'future': True, 'pool_pre_ping': True}
 if DB_URL.startswith('postgresql'):
     engine_options.update({'pool_size': 5, 'max_overflow': 10, 'pool_recycle': 1800})
+if DB_URL in ('sqlite://', 'sqlite:///:memory:'):
+    # An in-memory SQLite database lives inside its connection. The default pool
+    # can open a second one - pool_pre_ping discarding a connection is enough - and
+    # that second connection is a brand new, empty database, so tables created
+    # earlier vanish mid-run. StaticPool keeps exactly one connection so the
+    # database persists for the whole process. Test-only: production is Postgres.
+    engine_options.update({'poolclass': StaticPool,
+                           'connect_args': {'check_same_thread': False}})
 engine = create_engine(DB_URL, **engine_options)
 metadata = MetaData()
 

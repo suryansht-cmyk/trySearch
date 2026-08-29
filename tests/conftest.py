@@ -38,6 +38,18 @@ class NetworkAccessDenied(RuntimeError):
 
 
 @pytest.fixture(autouse=True)
+def database_schema():
+    """Guarantee the schema exists before each test, whatever ran before.
+
+    metadata.create_all is idempotent. This is belt-and-braces after a
+    tearDownClass calling engine.dispose() silently emptied the shared in-memory
+    database for every test that sorted after it.
+    """
+    metadata.create_all(engine)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def no_network(monkeypatch):
     """Fail any test that attempts a real connection.
 

@@ -29,7 +29,7 @@ from app.db import engine
 from app.jobs import create_analytics_job, start_background_analytics_job
 from app.metrics import latest_prompt_evidence
 from app.models import analytics_answer_sources, analytics_audit_jobs, analytics_prompt_scan_runs, analytics_provider_answers, analytics_topics, analytics_tracked_prompts
-from app.ownership import ensure_workspace_access
+from app.tenancy import require_workspace
 from app.scanning import run_prompt_scan_job
 from app.utils import row_to_dict
 
@@ -37,9 +37,10 @@ evidence_bp = Blueprint('evidence', __name__)
 
 @evidence_bp.route('/api/analytics/projects/<int:workspace_id>/prompt-scans', methods=['POST'])
 def start_analytics_prompt_scan(workspace_id):
-    user_id, project, error = ensure_workspace_access(workspace_id)
+    access, error = require_workspace(workspace_id)
     if error:
         return error
+    user_id, project = access.user_id, access.workspace
     if not os.environ.get('PERPLEXITY_API_KEY'):
         return jsonify({'error': 'Perplexity is not configured. Add PERPLEXITY_API_KEY on the server.'}), 503
     with engine.connect() as conn:
@@ -64,9 +65,10 @@ def start_analytics_prompt_scan(workspace_id):
 
 @evidence_bp.route('/api/analytics/projects/<int:workspace_id>/evidence', methods=['GET'])
 def analytics_evidence_endpoint(workspace_id):
-    _user_id, project, error = ensure_workspace_access(workspace_id)
+    access, error = require_workspace(workspace_id)
     if error:
         return error
+    project = access.workspace
     try:
         run_id = int(request.args['run_id']) if request.args.get('run_id') else None
     except ValueError:
@@ -85,7 +87,7 @@ def analytics_evidence_endpoint(workspace_id):
 
 @evidence_bp.route('/api/analytics/projects/<int:workspace_id>/evidence/<int:answer_id>', methods=['GET'])
 def analytics_evidence_detail_endpoint(workspace_id, answer_id):
-    _user_id, _project, error = ensure_workspace_access(workspace_id)
+    access, error = require_workspace(workspace_id)
     if error:
         return error
     with engine.connect() as conn:

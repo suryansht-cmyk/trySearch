@@ -27,16 +27,18 @@ from app.auth import analytics_user_id
 from app.db import engine
 from app.metrics import analytics_report
 from app.models import memberships, analytics_answer_sources, analytics_audit_findings, analytics_audit_jobs, analytics_audit_pages, competitors, analytics_content_opportunities, workspaces, analytics_prompt_scan_runs, analytics_provider_answers, analytics_rag_chunks, analytics_rag_documents, analytics_rag_insights, analytics_scan_schedules, analytics_site_audits, analytics_sitemaps, analytics_topics, analytics_tracked_prompts, gsc_connections, gsc_properties, gsc_query_rows, gsc_sync_runs
-from app.ownership import default_org_for_user, workspace_for_user
+from app.tenancy import current_user_id, default_org_for_user, require_workspace, workspaces_for_user
 from app.utils import normalise_domain, normalise_website_url, row_to_dict, to_iso
 
 analytics_bp = Blueprint('analytics', __name__)
 
 @analytics_bp.route('/api/analytics/projects', methods=['GET', 'POST'])
 def analytics_projects_endpoint():
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
+    # Not workspace-scoped: this lists what the user can reach and creates new
+    # workspaces, so there is no workspace to guard yet.
+    user_id, error = current_user_id()
+    if error:
+        return error
 
     if request.method == 'POST':
         data = request.get_json(silent=True) or {}
@@ -57,19 +59,11 @@ def analytics_projects_endpoint():
                 created_at=now, updated_at=now,
             ))
             workspace_id = result.inserted_primary_key[0]
-        project = workspace_for_user(workspace_id, user_id)
-        return jsonify({'status': 'success', 'project': row_to_dict(project)}), 201
+        access, error = require_workspace(workspace_id, write=False)
+        return jsonify({'status': 'success', 'project': row_to_dict(access.workspace)}), 201
 
     with engine.connect() as conn:
-        project_rows = conn.execute(
-            select(workspaces)
-            .join(memberships, memberships.c.org_id == workspaces.c.org_id)
-            .where(
-                (memberships.c.user_id == user_id)
-                & (workspaces.c.status == 'active')
-            )
-            .order_by(desc(workspaces.c.updated_at))
-        ).mappings().all()
+        project_rows = workspaces_for_user(user_id)
         projects = []
         for row in project_rows:
             project = dict(row)
@@ -97,12 +91,10 @@ def analytics_projects_endpoint():
 
 @analytics_bp.route('/api/analytics/projects/<int:workspace_id>', methods=['DELETE'])
 def delete_analytics_project(workspace_id):
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
-    project = workspace_for_user(workspace_id, user_id)
-    if not project:
-        return jsonify({'error': 'Project not found.'}), 404
+    access, error = require_workspace(workspace_id)
+    if error:
+        return error
+    user_id, project = access.user_id, access.workspace
     with engine.begin() as conn:
         audit_ids = [row[0] for row in conn.execute(select(analytics_site_audits.c.id).where(
             analytics_site_audits.c.workspace_id == workspace_id
@@ -157,10 +149,10 @@ def delete_analytics_project(workspace_id):
 
 @analytics_bp.route('/api/analytics/projects/<int:workspace_id>/report', methods=['GET'])
 def analytics_report_endpoint(workspace_id):
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
-    report = analytics_report(workspace_id, user_id)
+    access, error = require_workspace(workspace_id)
+    if error:
+        return error
+    report = analytics_report(workspace_id, access.user_id)
     if not report:
-        return jsonify({'error': 'Project not found.'}), 404
+        return jsonify({'error': 'Workspace not found.'}), 404
     return jsonify(report)
