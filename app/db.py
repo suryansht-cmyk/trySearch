@@ -1,14 +1,13 @@
-"""Engine, metadata and the startup schema bootstrap.
+"""Engine, metadata and startup identity check.
 
-T2 replaces bootstrap_database() below with Alembic migrations. The logic is moved
-here unchanged so T1 stays a pure move.
+Schema is owned by Alembic (migrations/). No DDL is issued from application code.
 """
 
 import os
 import uuid
 
-from sqlalchemy import MetaData, create_engine, insert, select, text
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy import MetaData, create_engine, insert, select
+from sqlalchemy.exc import IntegrityError
 
 from app.config import IS_PRODUCTION, SQLITE_PATH
 
@@ -37,23 +36,6 @@ if DB_URL.startswith('postgresql'):
     engine_options.update({'pool_size': 5, 'max_overflow': 10, 'pool_recycle': 1800})
 engine = create_engine(DB_URL, **engine_options)
 metadata = MetaData()
-
-
-def ensure_database_column(table_name, column_name, column_type):
-    """Apply the one additive migration required by older deployed databases."""
-    from sqlalchemy import inspect
-    existing_columns = {column['name'] for column in inspect(engine).get_columns(table_name)}
-    if column_name not in existing_columns:
-        try:
-            with engine.begin() as conn:
-                conn.execute(text(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}'))
-        except SQLAlchemyError:
-            # Two Gunicorn workers can initialize at the same time. Ignore only
-            # the race where the other worker successfully added this column.
-            refreshed = {column['name'] for column in inspect(engine).get_columns(table_name)}
-            if column_name not in refreshed:
-                raise
-
 
 
 def get_database_identity():
@@ -89,24 +71,12 @@ DATABASE_IDENTITY = None
 
 
 def bootstrap_database():
-    """Create the schema and pin the database identity, exactly as import used to.
+    """Pin the database identity at startup.
 
-    app.models imports `metadata` from this module, so the table definitions are
-    imported here inside the function rather than at module scope, where they would
-    form a cycle.
+    Schema creation lives in migrations/ as of T2: run `alembic upgrade head`
+    before booting against an empty database. This function no longer issues DDL.
     """
     global DATABASE_IDENTITY
-    from app import models  # noqa: F401 - registers the tables on `metadata`
-
-    # Create tables if they don't exist
-    metadata.create_all(engine)
-
-    ensure_database_column('analytics_projects', 'website_url', 'VARCHAR(2048)')
-    ensure_database_column('analytics_provider_answers', 'prompt_text', 'TEXT')
-    ensure_database_column('analytics_provider_answers', 'prompt_intent', 'VARCHAR(80)')
-    ensure_database_column('analytics_provider_answers', 'topic_name', 'VARCHAR(180)')
-    ensure_database_column('analytics_prompt_scan_runs', 'competitor_snapshot', 'TEXT')
-
     DATABASE_IDENTITY = get_database_identity()
     expected_database_identity = os.environ.get('DATABASE_INSTANCE_ID')
     if expected_database_identity and expected_database_identity != DATABASE_IDENTITY:

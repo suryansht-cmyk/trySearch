@@ -33,16 +33,20 @@ for _key in ('PERPLEXITY_API_KEY', 'HF_TOKEN', 'GOOGLE_CLIENT_ID',
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import server_pg  # noqa: E402
-
-app = server_pg.app
-
 # Before T1 these lived on server_pg; after the split they live in app.db. Resolving
 # both keeps one script usable on either side of the refactor.
 try:
+    from app import models  # noqa: F401 - registers the tables on `metadata`
     from app.db import engine as _engine, metadata as _metadata
+    # As of T2 the app issues no DDL, and building it reads the database identity,
+    # so the schema has to exist before server_pg is imported.
+    _metadata.create_all(_engine)
+    import server_pg  # noqa: E402
 except ImportError:  # pre-T1 monolith
+    import server_pg  # noqa: E402
     _engine, _metadata = server_pg.engine, server_pg.metadata
+
+app = server_pg.app
 
 # Values substituted into <converter:name> placeholders when building a concrete URL.
 SAMPLE_BY_CONVERTER = {

@@ -8,3 +8,4 @@ message.jpg
 searchable.db
 .venv/
 route_snapshot*.json
+.env*
