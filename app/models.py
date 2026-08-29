@@ -20,7 +20,7 @@ from sqlalchemy import (
     text,
 )
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, JSON
+from sqlalchemy import CheckConstraint, Date, ForeignKey, Index, JSON, Numeric
 from sqlalchemy.dialects.postgresql import ARRAY
 
 # The spec calls for text[]. Postgres gets exactly that; SQLite, which every test
@@ -71,6 +71,10 @@ organizations = Table(
     # the table it points at is real.
     Column('plan_id', Integer, nullable=True),
     Column('stripe_customer_id', Text, nullable=True),
+    # The plan's monthly spend ceiling in USD. Belongs on plans, which does not
+    # exist until Stripe in week 3+, so it sits here and falls back to
+    # DEFAULT_MONTHLY_COST_CEILING_USD when null.
+    Column('monthly_cost_ceiling_usd', Numeric(10, 2), nullable=True),
     Column('created_at', DateTime, nullable=False),
 )
 
@@ -482,3 +486,24 @@ content_documents = Table(
     Column('updated_at', DateTime, nullable=False),
 )
 
+
+usage_ledger = Table(
+    'usage_ledger',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('workspace_id', Integer, nullable=False),
+    # Denormalised on purpose: the ceiling check is then one index scan.
+    Column('org_id', Integer, nullable=False, index=True),
+    Column('date', Date, nullable=False),
+    Column('category', Text, nullable=False),
+    Column('provider', Text, nullable=False),
+    Column('units', Integer, nullable=False, default=1),
+    # Money is numeric, never float.
+    Column('cost_usd', Numeric(10, 6), nullable=False),
+    Column('created_at', DateTime, nullable=False),
+    CheckConstraint(
+        "category IN ('engine_query', 'extraction', 'agent', 'content', 'crawl')",
+        name='ck_usage_ledger_category',
+    ),
+    Index('ix_usage_ledger_org_created', 'org_id', 'created_at'),
+)

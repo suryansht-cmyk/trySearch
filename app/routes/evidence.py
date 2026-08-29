@@ -25,6 +25,7 @@ import json
 import os
 
 from app.db import engine
+from app.costs import ceiling_status, refusal_payload
 from app.jobs import create_analytics_job
 from app.metrics import latest_prompt_evidence
 from app.models import analytics_answer_sources, analytics_audit_jobs, analytics_prompt_scan_runs, analytics_provider_answers, analytics_topics, analytics_tracked_prompts
@@ -53,6 +54,10 @@ def start_analytics_prompt_scan(workspace_id):
         ).order_by(desc(analytics_audit_jobs.c.created_at)).limit(1)).mappings().first()
     if not prompt_count:
         return jsonify({'error': 'Add at least one active tracked prompt first.'}), 409
+    # Refuse before dispatch, so an org over its ceiling never reaches a paid call.
+    state, spend, ceiling = ceiling_status(access.org_id)
+    if state == 'exceeded':
+        return jsonify(refusal_payload(spend, ceiling)), 402
     if active:
         return jsonify({'status': 'accepted', 'job': row_to_dict(active)}), 202
     # Enqueue only. The CLI worker executes it; nothing runs inside the web

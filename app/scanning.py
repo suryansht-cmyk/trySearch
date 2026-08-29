@@ -26,6 +26,7 @@ import random
 import time
 
 from app.config import PERPLEXITY_MAX_PROMPTS_PER_SCAN
+from app.costs import ceiling_status, record_usage
 from app.db import engine
 from app.engines.perplexity import call_perplexity_answer, call_perplexity_search, normalise_perplexity_sources, perplexity_answer_citations, perplexity_answer_text
 from app.extraction.mentions import domain_matches, project_brand_aliases, text_mentions_alias
@@ -168,6 +169,23 @@ def run_prompt_scan_job(job_id):
         return
 
     project = dict(project)
+    workspace_id = project['id']
+    org_id = project['org_id']
+
+    # Ceiling checked before dispatch, so an org over budget spends nothing more.
+    # Counted from usage_ledger rows, not run rows: a retry storm writes no runs.
+    state, spend, ceiling = ceiling_status(org_id)
+    if state == 'exceeded':
+        update_analytics_job(
+            job_id, status='failed_terminal', progress=100,
+            error=(f'Monthly spend ceiling reached: ${spend} of ${ceiling}. '
+                   f'No provider calls were made.'),
+            completed_at=datetime.utcnow(),
+        )
+        return
+    if state == 'alert':
+        print(f'[costs] org {org_id} at ${spend} of ${ceiling} monthly ceiling (>=60%).')
+
     prompts = [dict(row) for row in prompts]
     competitor_rows = [dict(row) for row in competitor_rows]
     competitor_snapshot = json.dumps([
@@ -241,10 +259,16 @@ def run_prompt_scan_job(job_id):
             errors = []
             search_payload, search_error = call_with_retries(
                 call_perplexity_search, prompt['prompt'], region)
+            # Every provider call is metered, success or failure: a retry storm
+            # writes no runs but still burns money.
+            record_usage(workspace_id=workspace_id, org_id=org_id,
+                         category='engine_query', provider='Perplexity')
             if search_error:
                 errors.append(f'Search API: {search_error}')
             answer_payload, answer_error = call_with_retries(
                 call_perplexity_answer, prompt['prompt'])
+            record_usage(workspace_id=workspace_id, org_id=org_id,
+                         category='agent', provider='Perplexity')
             if answer_error:
                 errors.append(f'Agent API: {answer_error}')
             elif not perplexity_answer_text(answer_payload):
@@ -257,6 +281,11 @@ def run_prompt_scan_job(job_id):
                 scan_id, prompt, project, search_payload, answer_payload, errors,
                 round((time.monotonic() - started) * 1000),
             )
+            # Extraction is a regex and costs nothing, but the row keeps the ledger a
+            # complete record of what was derived from which answer - and makes
+            # "re-running extraction is free" auditable rather than merely claimed.
+            record_usage(workspace_id=workspace_id, org_id=org_id,
+                         category='extraction', provider='regex')
             if index < len(prompts):
                 time.sleep(max(0, min(float(os.environ.get('PERPLEXITY_REQUEST_DELAY_SECONDS', '0.2')), 3)))
         update_analytics_job(
