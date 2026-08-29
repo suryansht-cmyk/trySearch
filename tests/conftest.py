@@ -1,4 +1,4 @@
-"""Test schema setup.
+"""Test schema setup, recorded-fixture replay, and the no-network guard.
 
 Application code no longer creates tables — Alembic owns the schema as of T2. The
 tests run against in-memory SQLite, where replaying the migration chain for every
@@ -13,7 +13,11 @@ have to exist before that happens.
 `alembic upgrade head` from empty is verified separately, against staging Postgres.
 """
 
+import json
 import os
+import socket
+
+import pytest
 
 os.environ.setdefault('APP_ENV', 'development')
 os.environ.setdefault('SECRET_KEY', 'test-secret')
@@ -25,3 +29,52 @@ from app import models  # noqa: E402,F401 - registers the tables on `metadata`
 from app.db import engine, metadata  # noqa: E402
 
 metadata.create_all(engine)
+
+FIXTURE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
+
+
+class NetworkAccessDenied(RuntimeError):
+    """Raised when a test tries to open a socket."""
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Fail any test that attempts a real connection.
+
+    CLAUDE.md forbids paid calls from tests, and SPRINT T3 asks for proof that the
+    suite runs with no network at all. Enforcing it on every run is stronger than
+    proving it once: a test that starts reaching the network fails immediately
+    rather than passing slowly and quietly costing money.
+    """
+    def deny(*args, **kwargs):
+        raise NetworkAccessDenied(
+            'This test tried to open a network connection. Tests replay recorded '
+            'fixtures from tests/fixtures/; re-record with scripts/record_fixture.py.'
+        )
+
+    monkeypatch.setattr(socket.socket, 'connect', deny)
+    monkeypatch.setattr(socket.socket, 'connect_ex', deny)
+    monkeypatch.setattr(socket, 'create_connection', deny)
+    yield
+
+
+def load_fixture(engine_name, case):
+    """Return a recorded provider response verbatim.
+
+    Recorded by scripts/record_fixture.py. Never edit these by hand — when a
+    provider changes its format, re-record.
+    """
+    path = os.path.join(FIXTURE_ROOT, engine_name, f'{case}.json')
+    if not os.path.exists(path):
+        raise AssertionError(
+            f'Missing fixture {engine_name}/{case}.json. Record it with:\n'
+            f'  python scripts/record_fixture.py {engine_name} {case.split("_")[0]} "<prompt>"'
+        )
+    with open(path) as handle:
+        return json.load(handle)
+
+
+@pytest.fixture
+def provider_fixture():
+    """Fixture-replay helper: provider_fixture('perplexity', 'search_basic')."""
+    return load_fixture
