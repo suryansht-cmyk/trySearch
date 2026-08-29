@@ -37,6 +37,13 @@ import server_pg  # noqa: E402
 
 app = server_pg.app
 
+# Before T1 these lived on server_pg; after the split they live in app.db. Resolving
+# both keeps one script usable on either side of the refactor.
+try:
+    from app.db import engine as _engine, metadata as _metadata
+except ImportError:  # pre-T1 monolith
+    _engine, _metadata = server_pg.engine, server_pg.metadata
+
 # Values substituted into <converter:name> placeholders when building a concrete URL.
 SAMPLE_BY_CONVERTER = {
     'int': '1',
@@ -144,8 +151,8 @@ def reset_and_seed(client):
     DELETE /api/analytics/projects/1 sorts ahead of the routes nested beneath it, so
     those would all record a 404 that says nothing about the handler.
     """
-    server_pg.metadata.drop_all(server_pg.engine)
-    server_pg.metadata.create_all(server_pg.engine)
+    _metadata.drop_all(_engine)
+    _metadata.create_all(_engine)
     client.post('/api/register', json=CREDENTIALS)
     login(client)
     statuses = {}

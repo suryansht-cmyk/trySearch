@@ -8,18 +8,25 @@ os.environ['APP_ENV'] = 'development'
 os.environ['DATABASE_URL'] = 'sqlite://'
 os.environ['SECRET_KEY'] = 'rag-test-secret'
 
-import server_pg as analytics  # noqa: E402
+import server_pg  # noqa: E402
+from app.rag import chunking  # noqa: E402
+from app import db  # noqa: E402
+from app import http_client  # noqa: E402
+from app import jobs  # noqa: E402
+from app import models  # noqa: E402
+from app.rag import answers as rag_answers  # noqa: E402
+from app.rag import ranking  # noqa: E402
 from sqlalchemy import func, insert, select  # noqa: E402
 
 
 class RagPipelineTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
-        analytics.engine.dispose()
+        db.engine.dispose()
 
     def test_visible_copy_chunking_is_bounded_and_overlapping(self):
         content = ' '.join(f'word{index}' for index in range(55))
-        chunks = analytics.chunk_visible_text(
+        chunks = chunking.chunk_visible_text(
             content, chunk_words=20, overlap_words=5, max_chunks=3,
         )
         self.assertEqual(len(chunks), 3)
@@ -37,7 +44,7 @@ class RagPipelineTests(unittest.TestCase):
                 'content_text': 'Monthly pricing plans include a starter account and team account.',
             },
         ]
-        ranked = analytics.rank_rag_chunks('Which page explains structured data schema?', rows)
+        ranked = ranking.rank_rag_chunks('Which page explains structured data schema?', rows)
         self.assertEqual(ranked[0]['id'], 1)
         self.assertEqual(ranked[0]['evidence_ref'], 'chunk:1')
 
@@ -57,24 +64,24 @@ class RagPipelineTests(unittest.TestCase):
             'OLLAMA_MODEL': 'test-open-model',
         }
         with patch.dict(os.environ, provider_env, clear=False), patch.object(
-            analytics, 'external_json_request', return_value=valid_payload,
+            rag_answers, 'external_json_request', return_value=valid_payload,
         ):
-            result = analytics.rag_model_answer(project, 'What proof is present?', chunks)
+            result = rag_answers.rag_model_answer(project, 'What proof is present?', chunks)
         self.assertEqual(result['evidence_refs'], ['chunk:7'])
 
         invalid_payload = {'choices': [{'message': {'content': (
             '{"answer":"Unsupported answer.","evidence_refs":["chunk:999"]}'
         )}}]}
         with patch.dict(os.environ, provider_env, clear=False), patch.object(
-            analytics, 'external_json_request', return_value=invalid_payload,
+            rag_answers, 'external_json_request', return_value=invalid_payload,
         ):
-            with self.assertRaises(analytics.ProviderAPIError):
-                analytics.rag_model_answer(project, 'What proof is present?', chunks)
+            with self.assertRaises(http_client.ProviderAPIError):
+                rag_answers.rag_model_answer(project, 'What proof is present?', chunks)
 
     def test_site_audit_persists_retrievable_public_page_copy(self):
         now = datetime.utcnow()
-        with analytics.engine.begin() as conn:
-            project_id = conn.execute(insert(analytics.analytics_projects).values(
+        with db.engine.begin() as conn:
+            project_id = conn.execute(insert(models.analytics_projects).values(
                 user_id=1, domain='example.com', website_url='https://example.com/',
                 brand_name='Example', industry='Software', created_at=now, updated_at=now,
             )).inserted_primary_key[0]
@@ -101,20 +108,20 @@ class RagPipelineTests(unittest.TestCase):
             'metadata_score': 100, 'content_score': 70,
             'crawlability_score': 100, 'structured_data_score': 100,
         }
-        audit_id = analytics.persist_site_audit(project_id, None, crawl)
-        with analytics.engine.connect() as conn:
+        audit_id = jobs.persist_site_audit(project_id, None, crawl)
+        with db.engine.connect() as conn:
             document_count = conn.execute(select(func.count()).select_from(
-                analytics.analytics_rag_documents
-            ).where(analytics.analytics_rag_documents.c.audit_id == audit_id)).scalar_one()
+                models.analytics_rag_documents
+            ).where(models.analytics_rag_documents.c.audit_id == audit_id)).scalar_one()
             chunk_count = conn.execute(select(func.count()).select_from(
-                analytics.analytics_rag_chunks
-            ).where(analytics.analytics_rag_chunks.c.audit_id == audit_id)).scalar_one()
+                models.analytics_rag_chunks
+            ).where(models.analytics_rag_chunks.c.audit_id == audit_id)).scalar_one()
         self.assertEqual(document_count, 1)
         self.assertGreaterEqual(chunk_count, 1)
-        retrieved = analytics.retrieve_audit_chunks(audit_id, 'benchmark methodology sources')
+        retrieved = ranking.retrieve_audit_chunks(audit_id, 'benchmark methodology sources')
         self.assertEqual(retrieved[0]['document_url'], 'https://example.com/research')
 
-        with analytics.app.test_client() as client:
+        with server_pg.app.test_client() as client:
             with client.session_transaction() as session:
                 session['user_id'] = 1
             response = client.get(

@@ -10,45 +10,48 @@ os.environ['APP_ENV'] = 'development'
 os.environ['DATABASE_URL'] = 'sqlite://'
 os.environ['SECRET_KEY'] = 'analytics-live-metrics-test-secret'
 
-import server_pg as analytics  # noqa: E402
+import server_pg  # noqa: E402
+from app import db  # noqa: E402
+from app import metrics  # noqa: E402
+from app import models  # noqa: E402
 
 
 class AnalyticsLiveMetricTests(unittest.TestCase):
     def test_evidence_payload_derives_rankings_and_history_from_saved_records(self):
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-        with analytics.engine.begin() as conn:
-            project_id = conn.execute(insert(analytics.analytics_projects).values(
+        with db.engine.begin() as conn:
+            project_id = conn.execute(insert(models.analytics_projects).values(
                 user_id=1, domain='example.com', website_url='https://example.com',
                 brand_name='Example', industry='Software', created_at=now, updated_at=now,
             )).inserted_primary_key[0]
-            scan_id = conn.execute(insert(analytics.analytics_prompt_scan_runs).values(
+            scan_id = conn.execute(insert(models.analytics_prompt_scan_runs).values(
                 project_id=project_id, job_id=None, provider='Perplexity', model='provider/model',
                 region='IN', competitor_snapshot=json.dumps([{'name': 'Acme', 'domain': 'acme.com'}]),
                 status='succeeded', prompt_count=2, completed_count=2,
                 mention_rate=50, citation_rate=50, source_presence_rate=50, share_of_voice=33.33,
                 recommendation_summary=None, error=None, created_at=now, completed_at=now,
             )).inserted_primary_key[0]
-            first_answer_id = conn.execute(insert(analytics.analytics_provider_answers).values(
+            first_answer_id = conn.execute(insert(models.analytics_provider_answers).values(
                 scan_run_id=scan_id, prompt_id=101, prompt_text='Compare Example and Acme',
                 prompt_intent='Comparison', topic_name='Platforms', provider='Perplexity',
                 model='provider/model', status='succeeded', answer_text='Example and Acme are options.',
                 raw_response='{}', brand_mentioned=True, brand_cited=True, source_present=True,
                 best_source_rank=2, latency_ms=25, created_at=now, completed_at=now,
             )).inserted_primary_key[0]
-            second_answer_id = conn.execute(insert(analytics.analytics_provider_answers).values(
+            second_answer_id = conn.execute(insert(models.analytics_provider_answers).values(
                 scan_run_id=scan_id, prompt_id=102, prompt_text='Which tool is established?',
                 prompt_intent='Discovery', topic_name='Platforms', provider='Perplexity',
                 model='provider/model', status='succeeded', answer_text='Acme is established.',
                 raw_response='{}', brand_mentioned=False, brand_cited=False, source_present=False,
                 best_source_rank=None, latency_ms=25, created_at=now, completed_at=now,
             )).inserted_primary_key[0]
-            conn.execute(insert(analytics.analytics_answer_sources), [
+            conn.execute(insert(models.analytics_answer_sources), [
                 {'answer_id': first_answer_id, 'rank': 1, 'source_kind': 'search_result', 'title': 'Acme', 'url': 'https://acme.com/a', 'domain': 'acme.com'},
                 {'answer_id': first_answer_id, 'rank': 2, 'source_kind': 'search_result', 'title': 'Example', 'url': 'https://example.com/a', 'domain': 'example.com'},
                 {'answer_id': second_answer_id, 'rank': 3, 'source_kind': 'search_result', 'title': 'Acme', 'url': 'https://acme.com/b', 'domain': 'acme.com'},
             ])
 
-        payload = analytics.latest_prompt_evidence(project_id)
+        payload = metrics.latest_prompt_evidence(project_id)
 
         self.assertEqual(payload['measurement']['source'], 'stored_provider_evidence')
         self.assertTrue(payload['measurement']['cohort_id'])
