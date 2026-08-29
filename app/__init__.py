@@ -44,11 +44,8 @@ def create_app():
     from app.routes.audit import audit_bp
     from app.routes.content import content_bp
     from app.routes.evidence import evidence_bp
-    from app.routes.master_workspace import master_workspace_bp
     from app.routes.pages import pages_bp
-    from app.routes.prompt_intelligence import prompt_intelligence_bp
     from app.routes.prompts import prompts_bp
-    from app.routes.visibility import visibility_bp
 
     for blueprint in (
         auth_bp,
@@ -57,11 +54,8 @@ def create_app():
         audit_bp,
         content_bp,
         evidence_bp,
-        master_workspace_bp,
         pages_bp,
-        prompt_intelligence_bp,
         prompts_bp,
-        visibility_bp,
     ):
         app.register_blueprint(blueprint)
 

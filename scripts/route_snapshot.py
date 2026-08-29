@@ -133,11 +133,11 @@ SEEDS = [
     ('/api/analytics/projects/1/competitors', {'name': 'Rival', 'domain': 'rival.com'}),
     ('/api/analytics/projects/1/tracked-prompts',
      {'prompt': 'best example tools for teams', 'intent': 'Discovery'}),
-    ('/api/prompt-intelligence/collections', {'name': 'Set', 'brand_name': 'Example'}),
-    ('/api/visibility-tracking/watchlists',
-     {'name': 'Watch', 'brand_name': 'Example', 'topic': 'tools'}),
+    # prompt-intelligence and visibility-tracking were removed in T5 with the
+    # mock-era tables behind them.
     ('/api/content-studio/documents',
-     {'title': 'Draft', 'brand_name': 'Example', 'keyword': 'example tools'}),
+     {'workspace_id': 1, 'title': 'Draft', 'brand_name': 'Example',
+      'keyword': 'example tools'}),
 ]
 
 

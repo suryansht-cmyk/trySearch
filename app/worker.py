@@ -24,8 +24,7 @@ import os
 
 from app.db import engine
 from app.jobs import create_analytics_job, run_site_audit_job, update_analytics_job
-from app.models import analytics_audit_jobs, analytics_projects, analytics_scan_schedules
-from app.ownership import project_for_user
+from app.models import analytics_audit_jobs, workspaces, analytics_scan_schedules
 from app.scanning import next_schedule_time, run_prompt_scan_job
 
 def run_scheduled_analytics_command():
@@ -38,28 +37,32 @@ def run_scheduled_analytics_command():
             (analytics_audit_jobs.c.status == 'running') &
             (analytics_audit_jobs.c.started_at < stale_before)
         ).values(status='failed_retryable', error='Recovered after a stale worker lease.'))
+        # The worker runs on behalf of the system, not a user. T5 dropped
+        # workspaces.user_id, and the job row no longer records one either, so the
+        # schedule is joined to its workspace purely to confirm it still exists.
         due_schedules = conn.execute(select(
             analytics_scan_schedules,
-            analytics_projects.c.user_id,
+            workspaces.c.id.label('workspace_row_id'),
+            workspaces.c.status.label('workspace_status'),
         ).join(
-            analytics_projects, analytics_scan_schedules.c.project_id == analytics_projects.c.id
+            workspaces, analytics_scan_schedules.c.workspace_id == workspaces.c.id
         ).where(
             (analytics_scan_schedules.c.enabled.is_(True)) &
             (analytics_scan_schedules.c.next_run_at <= now)
         ).order_by(analytics_scan_schedules.c.next_run_at).limit(batch_size)).mappings().all()
     scheduled_count = 0
     for schedule in due_schedules:
-        project = project_for_user(schedule['project_id'], schedule['user_id'])
-        if not project:
+        if schedule['workspace_status'] != 'active':
             continue
+        project = {'id': schedule['workspace_id']}
         with engine.connect() as conn:
             active = conn.execute(select(analytics_audit_jobs.c.id).where(
-                (analytics_audit_jobs.c.project_id == schedule['project_id']) &
+                (analytics_audit_jobs.c.workspace_id == schedule['workspace_id']) &
                 (analytics_audit_jobs.c.job_type == 'prompt_scan') &
                 (analytics_audit_jobs.c.status.in_(['queued', 'running', 'failed_retryable']))
             ).limit(1)).scalar_one_or_none()
         if not active:
-            create_analytics_job(project, schedule['user_id'], 'prompt_scan', provider='Perplexity')
+            create_analytics_job(project, 'prompt_scan', provider='Perplexity')
             scheduled_count += 1
         with engine.begin() as conn:
             conn.execute(update(analytics_scan_schedules).where(

@@ -30,7 +30,7 @@ from app.rag.chunking import chunk_visible_text, rag_terms
 from app.routes.pages import index
 from app.utils import row_to_dict
 
-def index_rag_page(conn, *, project_id, audit_id, page_id, page, created_at):
+def index_rag_page(conn, *, workspace_id, audit_id, page_id, page, created_at):
     """Persist normalized public copy and its retrieval chunks in one audit transaction."""
     content_text = re.sub(r'\s+', ' ', (page.get('content_text') or '')).strip()[:RAG_DOCUMENT_MAX_CHARS]
     if not content_text:
@@ -43,7 +43,7 @@ def index_rag_page(conn, *, project_id, audit_id, page_id, page, created_at):
     if duplicate_document_id:
         return duplicate_document_id
     document_result = conn.execute(insert(analytics_rag_documents).values(
-        project_id=project_id, audit_id=audit_id, page_id=page_id,
+        workspace_id=workspace_id, audit_id=audit_id, page_id=page_id,
         url=(page.get('url') or page.get('requested_url') or '')[:2048],
         title=page.get('title'), content_hash=content_hash, content_text=content_text,
         word_count=len(re.findall(r"\b[\w'-]+\b", content_text)), created_at=created_at,
@@ -53,7 +53,7 @@ def index_rag_page(conn, *, project_id, audit_id, page_id, page, created_at):
     if chunks:
         conn.execute(insert(analytics_rag_chunks), [
             {
-                'project_id': project_id, 'audit_id': audit_id, 'document_id': document_id,
+                'workspace_id': workspace_id, 'audit_id': audit_id, 'document_id': document_id,
                 'chunk_index': index, 'content_hash': hashlib.sha256(chunk.encode('utf-8')).hexdigest(),
                 'content_text': chunk, 'token_count': len(rag_terms(chunk)), 'created_at': created_at,
             }

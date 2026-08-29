@@ -27,7 +27,7 @@ from app.auth import analytics_user_id
 from app.db import engine
 from app.jobs import analytics_job_for_user, create_analytics_job, latest_site_audit, run_site_audit_job, start_background_analytics_job
 from app.models import analytics_audit_jobs, analytics_site_audits
-from app.ownership import ensure_project_owner, project_for_user
+from app.ownership import ensure_workspace_access, workspace_for_user
 from app.rag.answers import create_rag_insight
 from app.rag.index import rag_index_summary
 from app.rag.ranking import retrieve_audit_chunks
@@ -35,23 +35,23 @@ from app.utils import row_to_dict, to_iso
 
 audit_bp = Blueprint('audit', __name__)
 
-@audit_bp.route('/api/analytics/projects/<int:project_id>/audits', methods=['POST'])
-def start_site_audit(project_id):
+@audit_bp.route('/api/analytics/projects/<int:workspace_id>/audits', methods=['POST'])
+def start_site_audit(workspace_id):
     user_id, auth_error = analytics_user_id()
     if auth_error:
         return auth_error
-    project = project_for_user(project_id, user_id)
+    project = workspace_for_user(workspace_id, user_id)
     if not project:
         return jsonify({'error': 'Project not found.'}), 404
     with engine.connect() as conn:
         active = conn.execute(select(analytics_audit_jobs).where(
-            (analytics_audit_jobs.c.project_id == project_id) &
+            (analytics_audit_jobs.c.workspace_id == workspace_id) &
             (analytics_audit_jobs.c.job_type == 'site_audit') &
             (analytics_audit_jobs.c.status.in_(['queued', 'running']))
         ).order_by(desc(analytics_audit_jobs.c.created_at)).limit(1)).mappings().first()
     if active:
         return jsonify({'status': 'accepted', 'job': row_to_dict(active)}), 202
-    job_id = create_analytics_job(project, user_id, 'site_audit')
+    job_id = create_analytics_job(project, 'site_audit')
     start_background_analytics_job(job_id, run_site_audit_job)
     return jsonify({'status': 'accepted', 'job_id': job_id}), 202
 
@@ -65,18 +65,18 @@ def analytics_job_status(job_id):
         return jsonify({'error': 'Analytics job not found.'}), 404
     return jsonify({'job': job})
 
-@audit_bp.route('/api/analytics/projects/<int:project_id>/audit', methods=['GET'])
-def site_audit_report_endpoint(project_id):
+@audit_bp.route('/api/analytics/projects/<int:workspace_id>/audit', methods=['GET'])
+def site_audit_report_endpoint(workspace_id):
     user_id, auth_error = analytics_user_id()
     if auth_error:
         return auth_error
-    project = project_for_user(project_id, user_id)
+    project = workspace_for_user(workspace_id, user_id)
     if not project:
         return jsonify({'error': 'Project not found.'}), 404
-    audit = latest_site_audit(project_id)
+    audit = latest_site_audit(workspace_id)
     with engine.connect() as conn:
         active_job = conn.execute(select(analytics_audit_jobs).where(
-            (analytics_audit_jobs.c.project_id == project_id) &
+            (analytics_audit_jobs.c.workspace_id == workspace_id) &
             (analytics_audit_jobs.c.job_type == 'site_audit') &
             (analytics_audit_jobs.c.status.in_(['queued', 'running']))
         ).order_by(desc(analytics_audit_jobs.c.created_at)).limit(1)).mappings().first()
@@ -85,10 +85,10 @@ def site_audit_report_endpoint(project_id):
         'active_job': row_to_dict(active_job) if active_job else None,
     })
 
-def rag_audit_for_project(project_id, audit_id=None):
+def rag_audit_for_project(workspace_id, audit_id=None):
     with engine.connect() as conn:
         statement = select(analytics_site_audits).where(
-            analytics_site_audits.c.project_id == project_id
+            analytics_site_audits.c.workspace_id == workspace_id
         )
         if audit_id is not None:
             statement = statement.where(analytics_site_audits.c.id == audit_id)
@@ -109,10 +109,10 @@ def rag_retrieval_payload(rows):
         })
     return payload
 
-@audit_bp.route('/api/v1/analytics/projects/<int:project_id>/rag', methods=['GET', 'POST'])
-def analytics_rag_endpoint(project_id):
+@audit_bp.route('/api/v1/analytics/projects/<int:workspace_id>/rag', methods=['GET', 'POST'])
+def analytics_rag_endpoint(workspace_id):
     """Retrieve or synthesize crawl-grounded insights without changing measured metrics."""
-    _user_id, project, error = ensure_project_owner(project_id)
+    _user_id, project, error = ensure_workspace_access(workspace_id)
     if error:
         return error
     data = (request.get_json(silent=True) or {}) if request.method == 'POST' else {}
@@ -123,7 +123,7 @@ def analytics_rag_endpoint(project_id):
         audit_id = int(raw_audit_id) if raw_audit_id is not None and raw_audit_id != '' else None
     except (TypeError, ValueError):
         return jsonify({'error': 'audit_id must be an integer.'}), 400
-    audit = rag_audit_for_project(project_id, audit_id)
+    audit = rag_audit_for_project(workspace_id, audit_id)
     if not audit:
         return jsonify({'error': 'Run a successful website audit before using crawl-grounded RAG.'}), 404
     summary = rag_index_summary(audit['id'])

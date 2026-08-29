@@ -25,9 +25,9 @@ from sqlalchemy import (
 
 from app.auth import analytics_user_id
 from app.db import engine
-from app.metrics import analytics_report, make_analytics_report
-from app.models import analytics_answer_sources, analytics_audit_findings, analytics_audit_jobs, analytics_audit_pages, analytics_competitors, analytics_content_opportunities, analytics_engine_metrics, analytics_projects, analytics_prompt_scan_runs, analytics_prompts, analytics_provider_answers, analytics_rag_chunks, analytics_rag_documents, analytics_rag_insights, analytics_runs, analytics_scan_schedules, analytics_site_audits, analytics_sitemaps, analytics_topics, analytics_tracked_prompts, gsc_connections, gsc_properties, gsc_query_rows, gsc_sync_runs
-from app.ownership import is_legacy_mock_analytics_run, project_for_user
+from app.metrics import analytics_report
+from app.models import memberships, analytics_answer_sources, analytics_audit_findings, analytics_audit_jobs, analytics_audit_pages, competitors, analytics_content_opportunities, workspaces, analytics_prompt_scan_runs, analytics_provider_answers, analytics_rag_chunks, analytics_rag_documents, analytics_rag_insights, analytics_scan_schedules, analytics_site_audits, analytics_sitemaps, analytics_topics, analytics_tracked_prompts, gsc_connections, gsc_properties, gsc_query_rows, gsc_sync_runs
+from app.ownership import default_org_for_user, workspace_for_user
 from app.utils import normalise_domain, normalise_website_url, row_to_dict, to_iso
 
 analytics_bp = Blueprint('analytics', __name__)
@@ -47,20 +47,28 @@ def analytics_projects_endpoint():
         industry = (data.get('industry') or 'General').strip()[:150]
         if not domain or not brand_name:
             return jsonify({'error': 'Enter a valid website domain and brand name.'}), 400
+        org_id = default_org_for_user(user_id)
         now = datetime.utcnow()
         with engine.begin() as conn:
-            result = conn.execute(insert(analytics_projects).values(
-                user_id=user_id, domain=domain, website_url=website_url, brand_name=brand_name[:150], industry=industry or 'General',
+            result = conn.execute(insert(workspaces).values(
+                org_id=org_id, domain=domain, domains=[domain], website_url=website_url,
+                brand_name=brand_name[:150], industry=industry or 'General',
+                geo='US', language='en', kind='project', status='active',
                 created_at=now, updated_at=now,
             ))
-            project_id = result.inserted_primary_key[0]
-        project = project_for_user(project_id, user_id)
+            workspace_id = result.inserted_primary_key[0]
+        project = workspace_for_user(workspace_id, user_id)
         return jsonify({'status': 'success', 'project': row_to_dict(project)}), 201
 
     with engine.connect() as conn:
         project_rows = conn.execute(
-            select(analytics_projects).where(analytics_projects.c.user_id == user_id)
-            .order_by(desc(analytics_projects.c.updated_at))
+            select(workspaces)
+            .join(memberships, memberships.c.org_id == workspaces.c.org_id)
+            .where(
+                (memberships.c.user_id == user_id)
+                & (workspaces.c.status == 'active')
+            )
+            .order_by(desc(workspaces.c.updated_at))
         ).mappings().all()
         projects = []
         for row in project_rows:
@@ -71,13 +79,8 @@ def analytics_projects_endpoint():
                     analytics_site_audits.c.readiness_score,
                     analytics_site_audits.c.status,
                     analytics_site_audits.c.created_at,
-                ).where(analytics_site_audits.c.project_id == project['id'])
+                ).where(analytics_site_audits.c.workspace_id == project['id'])
                 .order_by(desc(analytics_site_audits.c.created_at)).limit(1)
-            ).mappings().first()
-            latest_legacy = conn.execute(
-                select(analytics_runs.c.id, analytics_runs.c.visibility_score, analytics_runs.c.created_at, analytics_runs.c.summary)
-                .where(analytics_runs.c.project_id == project['id'])
-                .order_by(desc(analytics_runs.c.created_at)).limit(1)
             ).mappings().first()
             if latest_site:
                 project['latest_run'] = {
@@ -86,21 +89,23 @@ def analytics_projects_endpoint():
                     'source_type': 'website_crawl',
                 }
             else:
-                project['latest_run'] = row_to_dict(latest_legacy) if latest_legacy and not is_legacy_mock_analytics_run(latest_legacy) else None
+                # No audit yet. analytics_runs was the legacy fallback and T5 dropped
+                # it, so "not yet run" is now the only honest answer here.
+                project['latest_run'] = None
             projects.append(row_to_dict(project))
     return jsonify({'projects': projects})
 
-@analytics_bp.route('/api/analytics/projects/<int:project_id>', methods=['DELETE'])
-def delete_analytics_project(project_id):
+@analytics_bp.route('/api/analytics/projects/<int:workspace_id>', methods=['DELETE'])
+def delete_analytics_project(workspace_id):
     user_id, auth_error = analytics_user_id()
     if auth_error:
         return auth_error
-    project = project_for_user(project_id, user_id)
+    project = workspace_for_user(workspace_id, user_id)
     if not project:
         return jsonify({'error': 'Project not found.'}), 404
     with engine.begin() as conn:
         audit_ids = [row[0] for row in conn.execute(select(analytics_site_audits.c.id).where(
-            analytics_site_audits.c.project_id == project_id
+            analytics_site_audits.c.workspace_id == workspace_id
         )).all()]
         if audit_ids:
             conn.execute(analytics_rag_insights.delete().where(analytics_rag_insights.c.audit_id.in_(audit_ids)))
@@ -117,7 +122,7 @@ def delete_analytics_project(project_id):
             conn.execute(analytics_site_audits.delete().where(analytics_site_audits.c.id.in_(audit_ids)))
 
         prompt_scan_ids = [row[0] for row in conn.execute(select(analytics_prompt_scan_runs.c.id).where(
-            analytics_prompt_scan_runs.c.project_id == project_id
+            analytics_prompt_scan_runs.c.workspace_id == workspace_id
         )).all()]
         if prompt_scan_ids:
             answer_ids = [row[0] for row in conn.execute(select(analytics_provider_answers.c.id).where(
@@ -129,7 +134,7 @@ def delete_analytics_project(project_id):
             conn.execute(analytics_content_opportunities.delete().where(analytics_content_opportunities.c.scan_run_id.in_(prompt_scan_ids)))
             conn.execute(analytics_prompt_scan_runs.delete().where(analytics_prompt_scan_runs.c.id.in_(prompt_scan_ids)))
 
-        connection = conn.execute(select(gsc_connections.c.id).where(gsc_connections.c.project_id == project_id)).scalar_one_or_none()
+        connection = conn.execute(select(gsc_connections.c.id).where(gsc_connections.c.workspace_id == workspace_id)).scalar_one_or_none()
         if connection:
             sync_ids = [row[0] for row in conn.execute(select(gsc_sync_runs.c.id).where(
                 gsc_sync_runs.c.connection_id == connection
@@ -140,52 +145,22 @@ def delete_analytics_project(project_id):
             conn.execute(gsc_properties.delete().where(gsc_properties.c.connection_id == connection))
             conn.execute(gsc_connections.delete().where(gsc_connections.c.id == connection))
 
-        conn.execute(analytics_topics.delete().where(analytics_topics.c.project_id == project_id))
-        conn.execute(analytics_competitors.delete().where(analytics_competitors.c.project_id == project_id))
-        conn.execute(analytics_tracked_prompts.delete().where(analytics_tracked_prompts.c.project_id == project_id))
-        conn.execute(analytics_scan_schedules.delete().where(analytics_scan_schedules.c.project_id == project_id))
-        conn.execute(analytics_content_opportunities.delete().where(analytics_content_opportunities.c.project_id == project_id))
-        conn.execute(analytics_audit_jobs.delete().where(analytics_audit_jobs.c.project_id == project_id))
-        run_ids = [row[0] for row in conn.execute(select(analytics_runs.c.id).where(analytics_runs.c.project_id == project_id)).all()]
-        if run_ids:
-            conn.execute(analytics_engine_metrics.delete().where(analytics_engine_metrics.c.run_id.in_(run_ids)))
-            conn.execute(analytics_prompts.delete().where(analytics_prompts.c.run_id.in_(run_ids)))
-        conn.execute(analytics_runs.delete().where(analytics_runs.c.project_id == project_id))
-        conn.execute(analytics_projects.delete().where(analytics_projects.c.id == project_id))
+        conn.execute(analytics_topics.delete().where(analytics_topics.c.workspace_id == workspace_id))
+        conn.execute(competitors.delete().where(competitors.c.workspace_id == workspace_id))
+        conn.execute(analytics_tracked_prompts.delete().where(analytics_tracked_prompts.c.workspace_id == workspace_id))
+        conn.execute(analytics_scan_schedules.delete().where(analytics_scan_schedules.c.workspace_id == workspace_id))
+        conn.execute(analytics_content_opportunities.delete().where(analytics_content_opportunities.c.workspace_id == workspace_id))
+        conn.execute(analytics_audit_jobs.delete().where(analytics_audit_jobs.c.workspace_id == workspace_id))
+        conn.execute(workspaces.delete().where(workspaces.c.id == workspace_id))
     return jsonify({'status': 'success'})
 
-@analytics_bp.route('/api/analytics/projects/<int:project_id>/scan', methods=['POST'])
-def scan_analytics_project(project_id):
-    user_id, auth_error = analytics_user_id()
-    if auth_error:
-        return auth_error
-    project = project_for_user(project_id, user_id)
-    if not project:
-        return jsonify({'error': 'Project not found.'}), 404
-    with engine.connect() as conn:
-        run_number = len(conn.execute(
-            select(analytics_runs.c.id).where(analytics_runs.c.project_id == project_id)
-        ).all()) + 1
-    report = make_analytics_report(project, max(run_number, 1))
-    now = datetime.utcnow()
-    with engine.begin() as conn:
-        result = conn.execute(insert(analytics_runs).values(
-            project_id=project_id, created_at=now,
-            visibility_score=report['visibility_score'], mention_rate=report['mention_rate'],
-            citation_rate=report['citation_rate'], share_of_voice=report['share_of_voice'], summary=report['summary'],
-        ))
-        run_id = result.inserted_primary_key[0]
-        conn.execute(insert(analytics_engine_metrics), [dict(metric, run_id=run_id) for metric in report['engines']])
-        conn.execute(insert(analytics_prompts), [dict(prompt, run_id=run_id) for prompt in report['prompts']])
-        conn.execute(analytics_projects.update().where(analytics_projects.c.id == project_id).values(updated_at=now))
-    return jsonify({'status': 'success', 'report': analytics_report(project_id, user_id)})
 
-@analytics_bp.route('/api/analytics/projects/<int:project_id>/report', methods=['GET'])
-def analytics_report_endpoint(project_id):
+@analytics_bp.route('/api/analytics/projects/<int:workspace_id>/report', methods=['GET'])
+def analytics_report_endpoint(workspace_id):
     user_id, auth_error = analytics_user_id()
     if auth_error:
         return auth_error
-    report = analytics_report(project_id, user_id)
+    report = analytics_report(workspace_id, user_id)
     if not report:
         return jsonify({'error': 'Project not found.'}), 404
     return jsonify(report)

@@ -78,3 +78,34 @@ def load_fixture(engine_name, case):
 def provider_fixture():
     """Fixture-replay helper: provider_fixture('perplexity', 'search_basic')."""
     return load_fixture
+
+
+def create_workspace(*, user_id, domain='example.com', brand_name='Example',
+                     industry='Software', created_at=None):
+    """Create an org, a membership for user_id, and a workspace inside it.
+
+    T5 replaced `analytics_projects.user_id` with membership in the owning org, so
+    a test that wants a reachable workspace has to create all three rows.
+    """
+    from datetime import datetime
+
+    from sqlalchemy import insert
+
+    from app.db import engine as _engine
+    from app.models import memberships, organizations, workspaces
+
+    now = created_at or datetime.utcnow()
+    with _engine.begin() as conn:
+        org_id = conn.execute(insert(organizations).values(
+            name=f'Org for {brand_name}', created_at=now,
+        )).inserted_primary_key[0]
+        conn.execute(insert(memberships).values(
+            org_id=org_id, user_id=user_id, role='owner',
+        ))
+        workspace_id = conn.execute(insert(workspaces).values(
+            org_id=org_id, brand_name=brand_name, domains=[domain], geo='US',
+            language='en', kind='project', status='active', created_at=now,
+            domain=domain, website_url=f'https://{domain}/', industry=industry,
+            updated_at=now,
+        )).inserted_primary_key[0]
+    return workspace_id

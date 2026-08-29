@@ -11,6 +11,7 @@ os.environ['DATABASE_URL'] = 'sqlite://'
 os.environ['SECRET_KEY'] = 'analytics-live-metrics-test-secret'
 
 import server_pg  # noqa: E402
+from conftest import create_workspace  # noqa: E402
 from app import db  # noqa: E402
 from app import metrics  # noqa: E402
 from app import models  # noqa: E402
@@ -19,13 +20,10 @@ from app import models  # noqa: E402
 class AnalyticsLiveMetricTests(unittest.TestCase):
     def test_evidence_payload_derives_rankings_and_history_from_saved_records(self):
         now = datetime.now(timezone.utc).replace(tzinfo=None)
+        workspace_id = create_workspace(user_id=1, created_at=now)
         with db.engine.begin() as conn:
-            project_id = conn.execute(insert(models.analytics_projects).values(
-                user_id=1, domain='example.com', website_url='https://example.com',
-                brand_name='Example', industry='Software', created_at=now, updated_at=now,
-            )).inserted_primary_key[0]
             scan_id = conn.execute(insert(models.analytics_prompt_scan_runs).values(
-                project_id=project_id, job_id=None, provider='Perplexity', model='provider/model',
+                workspace_id=workspace_id, job_id=None, provider='Perplexity', model='provider/model',
                 region='IN', competitor_snapshot=json.dumps([{'name': 'Acme', 'domain': 'acme.com'}]),
                 status='succeeded', prompt_count=2, completed_count=2,
                 mention_rate=50, citation_rate=50, source_presence_rate=50, share_of_voice=33.33,
@@ -51,7 +49,7 @@ class AnalyticsLiveMetricTests(unittest.TestCase):
                 {'answer_id': second_answer_id, 'rank': 3, 'source_kind': 'search_result', 'title': 'Acme', 'url': 'https://acme.com/b', 'domain': 'acme.com'},
             ])
 
-        payload = metrics.latest_prompt_evidence(project_id)
+        payload = metrics.latest_prompt_evidence(workspace_id)
 
         self.assertEqual(payload['measurement']['source'], 'stored_provider_evidence')
         self.assertTrue(payload['measurement']['cohort_id'])

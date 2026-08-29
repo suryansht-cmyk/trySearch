@@ -29,8 +29,8 @@ import secrets
 from app.auth import analytics_user_id
 from app.db import engine
 from app.http_client import ProviderAPIError, external_json_request
-from app.models import gsc_connections, gsc_properties, gsc_query_rows, gsc_sync_runs
-from app.ownership import project_for_user
+from app.models import memberships, workspaces, gsc_connections, gsc_properties, gsc_query_rows, gsc_sync_runs
+from app.ownership import workspace_for_user
 from app.utils import normalise_domain, row_to_dict
 
 gsc_bp = Blueprint('gsc', __name__)
@@ -79,11 +79,18 @@ def google_search_console_configured():
     except RuntimeError:
         return False
 
-def gsc_connection_for_project(project_id, user_id):
+def gsc_connection_for_project(workspace_id, user_id):
+    """T5 dropped gsc_connections.user_id; access follows org membership instead."""
     with engine.connect() as conn:
-        row = conn.execute(select(gsc_connections).where(
-            (gsc_connections.c.project_id == project_id) & (gsc_connections.c.user_id == user_id)
-        )).mappings().first()
+        row = conn.execute(
+            select(gsc_connections)
+            .join(workspaces, workspaces.c.id == gsc_connections.c.workspace_id)
+            .join(memberships, memberships.c.org_id == workspaces.c.org_id)
+            .where(
+                (gsc_connections.c.workspace_id == workspace_id)
+                & (memberships.c.user_id == user_id)
+            )
+        ).mappings().first()
     return dict(row) if row else None
 
 def google_redirect_uri():
@@ -115,8 +122,8 @@ def refresh_google_access_token(connection):
         ))
     return access_token
 
-def gsc_report(project_id, user_id):
-    connection = gsc_connection_for_project(project_id, user_id)
+def gsc_report(workspace_id, user_id):
+    connection = gsc_connection_for_project(workspace_id, user_id)
     if not connection:
         return {
             'configured': google_search_console_configured(), 'status': 'disconnected',
@@ -162,10 +169,10 @@ def start_google_search_console_oauth():
     if auth_error:
         return auth_error
     try:
-        project_id = int(request.args.get('project_id', ''))
+        workspace_id = int(request.args.get('workspace_id', ''))
     except ValueError:
-        return jsonify({'error': 'A valid project_id is required.'}), 400
-    if not project_for_user(project_id, user_id):
+        return jsonify({'error': 'A valid workspace_id is required.'}), 400
+    if not workspace_for_user(workspace_id, user_id):
         return jsonify({'error': 'Project not found.'}), 404
     if not google_search_console_configured():
         return jsonify({'error': 'Google Search Console is not configured on this server.'}), 503
@@ -175,7 +182,7 @@ def start_google_search_console_oauth():
         return jsonify({'error': str(error)}), 503
     state = secrets.token_urlsafe(32)
     session['gsc_oauth_state'] = state
-    session['gsc_oauth_project_id'] = project_id
+    session['gsc_oauth_project_id'] = workspace_id
     params = {
         'client_id': os.environ['GOOGLE_CLIENT_ID'], 'redirect_uri': google_redirect_uri(),
         'response_type': 'code', 'scope': GOOGLE_WEBMASTERS_SCOPE,
@@ -190,14 +197,14 @@ def google_search_console_oauth_callback():
     if auth_error:
         return auth_error
     expected_state = session.pop('gsc_oauth_state', None)
-    project_id = session.pop('gsc_oauth_project_id', None)
+    workspace_id = session.pop('gsc_oauth_project_id', None)
     if not expected_state or not secrets.compare_digest(request.args.get('state', ''), expected_state):
         return jsonify({'error': 'Google OAuth state validation failed.'}), 400
-    project = project_for_user(project_id, user_id)
+    project = workspace_for_user(workspace_id, user_id)
     if not project:
         return jsonify({'error': 'Project not found.'}), 404
     if request.args.get('error'):
-        return redirect(f'/analytics?project={project_id}&gsc=denied')
+        return redirect(f'/analytics?project={workspace_id}&gsc=denied')
     code = request.args.get('code')
     if not code:
         return jsonify({'error': 'Google did not return an authorization code.'}), 400
@@ -218,7 +225,7 @@ def google_search_console_oauth_callback():
         )
         sites = site_payload.get('siteEntry') or []
         now = datetime.utcnow()
-        existing = gsc_connection_for_project(project_id, user_id)
+        existing = gsc_connection_for_project(workspace_id, user_id)
         refresh_token = token_payload.get('refresh_token')
         encrypted_refresh = encrypt_oauth_token(refresh_token) if refresh_token else (existing or {}).get('encrypted_refresh_token')
         if not encrypted_refresh:
@@ -235,7 +242,7 @@ def google_search_console_oauth_callback():
         expires = now + timedelta(seconds=max(int(token_payload.get('expires_in', 3600)) - 30, 60))
         with engine.begin() as conn:
             values = dict(
-                user_id=user_id, encrypted_refresh_token=encrypted_refresh,
+                encrypted_refresh_token=encrypted_refresh,
                 encrypted_access_token=encrypt_oauth_token(access_token), token_expires_at=expires,
                 granted_scopes=token_payload.get('scope') or GOOGLE_WEBMASTERS_SCOPE,
                 selected_property=selected_property, status='connected', last_error=None, updated_at=now,
@@ -246,7 +253,7 @@ def google_search_console_oauth_callback():
                 conn.execute(gsc_properties.delete().where(gsc_properties.c.connection_id == connection_id))
             else:
                 result = conn.execute(insert(gsc_connections).values(
-                    project_id=project_id, created_at=now, **values,
+                    workspace_id=workspace_id, created_at=now, **values,
                 ))
                 connection_id = result.inserted_primary_key[0]
             for site in sites:
@@ -257,19 +264,19 @@ def google_search_console_oauth_callback():
                         permission_level=(site.get('permissionLevel') or 'unknown')[:80],
                         selected=site_url == selected_property,
                     ))
-        return redirect(f'/analytics?project={project_id}&gsc=connected')
+        return redirect(f'/analytics?project={workspace_id}&gsc=connected')
     except (ProviderAPIError, RuntimeError) as error:
-        return redirect(f'/analytics?project={project_id}&gsc=error&message={quote(str(error)[:180])}')
+        return redirect(f'/analytics?project={workspace_id}&gsc=error&message={quote(str(error)[:180])}')
 
-@gsc_bp.route('/api/analytics/projects/<int:project_id>/search-console', methods=['GET', 'DELETE'])
-def search_console_connection_endpoint(project_id):
+@gsc_bp.route('/api/analytics/projects/<int:workspace_id>/search-console', methods=['GET', 'DELETE'])
+def search_console_connection_endpoint(workspace_id):
     user_id, auth_error = analytics_user_id()
     if auth_error:
         return auth_error
-    if not project_for_user(project_id, user_id):
+    if not workspace_for_user(workspace_id, user_id):
         return jsonify({'error': 'Project not found.'}), 404
     if request.method == 'DELETE':
-        connection = gsc_connection_for_project(project_id, user_id)
+        connection = gsc_connection_for_project(workspace_id, user_id)
         if connection:
             with engine.begin() as conn:
                 sync_ids = [row[0] for row in conn.execute(select(gsc_sync_runs.c.id).where(
@@ -281,14 +288,14 @@ def search_console_connection_endpoint(project_id):
                 conn.execute(gsc_properties.delete().where(gsc_properties.c.connection_id == connection['id']))
                 conn.execute(gsc_connections.delete().where(gsc_connections.c.id == connection['id']))
         return jsonify({'status': 'disconnected'})
-    return jsonify({'search_console': gsc_report(project_id, user_id)})
+    return jsonify({'search_console': gsc_report(workspace_id, user_id)})
 
-@gsc_bp.route('/api/analytics/projects/<int:project_id>/search-console/property', methods=['PUT'])
-def select_search_console_property(project_id):
+@gsc_bp.route('/api/analytics/projects/<int:workspace_id>/search-console/property', methods=['PUT'])
+def select_search_console_property(workspace_id):
     user_id, auth_error = analytics_user_id()
     if auth_error:
         return auth_error
-    connection = gsc_connection_for_project(project_id, user_id)
+    connection = gsc_connection_for_project(workspace_id, user_id)
     if not connection:
         return jsonify({'error': 'Connect Google Search Console first.'}), 409
     site_url = ((request.get_json(silent=True) or {}).get('site_url') or '').strip()
@@ -304,14 +311,14 @@ def select_search_console_property(project_id):
         conn.execute(update(gsc_connections).where(gsc_connections.c.id == connection['id']).values(
             selected_property=site_url, updated_at=datetime.utcnow(),
         ))
-    return jsonify({'search_console': gsc_report(project_id, user_id)})
+    return jsonify({'search_console': gsc_report(workspace_id, user_id)})
 
-@gsc_bp.route('/api/analytics/projects/<int:project_id>/search-console/sync', methods=['POST'])
-def sync_search_console(project_id):
+@gsc_bp.route('/api/analytics/projects/<int:workspace_id>/search-console/sync', methods=['POST'])
+def sync_search_console(workspace_id):
     user_id, auth_error = analytics_user_id()
     if auth_error:
         return auth_error
-    connection = gsc_connection_for_project(project_id, user_id)
+    connection = gsc_connection_for_project(workspace_id, user_id)
     if not connection:
         return jsonify({'error': 'Connect Google Search Console first.'}), 409
     property_url = connection.get('selected_property')
@@ -330,7 +337,7 @@ def sync_search_console(project_id):
     now = datetime.utcnow()
     with engine.begin() as conn:
         result = conn.execute(insert(gsc_sync_runs).values(
-            project_id=project_id, connection_id=connection['id'], property_url=property_url,
+            workspace_id=workspace_id, connection_id=connection['id'], property_url=property_url,
             status='running', start_date=requested_start.isoformat(), end_date=requested_end.isoformat(),
             rows_saved=0, data_state='final', error=None, created_at=now, completed_at=None,
         ))
@@ -364,7 +371,7 @@ def sync_search_console(project_id):
             conn.execute(update(gsc_connections).where(gsc_connections.c.id == connection['id']).values(
                 status='connected', last_error=None, updated_at=datetime.utcnow(),
             ))
-        return jsonify({'status': 'success', 'search_console': gsc_report(project_id, user_id)})
+        return jsonify({'status': 'success', 'search_console': gsc_report(workspace_id, user_id)})
     except (ProviderAPIError, RuntimeError) as error:
         with engine.begin() as conn:
             conn.execute(update(gsc_sync_runs).where(gsc_sync_runs.c.id == sync_id).values(
@@ -373,4 +380,4 @@ def sync_search_console(project_id):
             conn.execute(update(gsc_connections).where(gsc_connections.c.id == connection['id']).values(
                 status='error', last_error=str(error)[:2000], updated_at=datetime.utcnow(),
             ))
-        return jsonify({'error': str(error), 'search_console': gsc_report(project_id, user_id)}), 502
+        return jsonify({'error': str(error), 'search_console': gsc_report(workspace_id, user_id)}), 502

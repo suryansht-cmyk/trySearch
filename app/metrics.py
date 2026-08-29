@@ -27,67 +27,20 @@ from app.crawler.scoring import fetch_website_snapshot, score_website_snapshot
 from app.db import engine, metadata
 from app.extraction.mentions import domain_matches, project_brand_aliases, text_mentions_alias
 from app.jobs import latest_site_audit
-from app.models import analytics_answer_sources, analytics_content_opportunities, analytics_engine_metrics, analytics_projects, analytics_prompt_scan_runs, analytics_prompts, analytics_provider_answers, analytics_runs, analytics_topics, analytics_tracked_prompts
-from app.ownership import is_legacy_mock_analytics_run, project_for_user
+from app.models import analytics_answer_sources, analytics_content_opportunities, workspaces, analytics_prompt_scan_runs, analytics_provider_answers, analytics_topics, analytics_tracked_prompts
+from app.ownership import workspace_for_user
 from app.utils import row_to_dict
 
-def make_analytics_report(project, run_number):
-    """Compatibility report built from a one-page factual crawl, never mock data."""
-    page = fetch_website_snapshot(project.get('website_url') or project['domain'])
-    page.update(score_website_snapshot(page))
-    if not page.get('fetched'):
-        message = f"Live audit unavailable: {page.get('error', 'The page could not be fetched.')}"
-        return {
-            'visibility_score': 0, 'mention_rate': 0, 'citation_rate': 0, 'share_of_voice': 0,
-            'summary': f"{message} No AI visibility score was calculated, so this report contains no estimated model data.",
-            'engines': [{'engine': 'Website reachability', 'visibility_score': 0, 'mention_rate': 0, 'citations': 0, 'change': 0}],
-            'prompts': [{'prompt': 'Live page fetch', 'intent': 'Access', 'position': 0, 'cited': 'Unavailable', 'leading_brand': page['url'], 'opportunity': message}],
-        }
-    snapshot = page
-    metadata = snapshot['metadata_score']
-    content_coverage = snapshot['content_score']
-    structured_data = snapshot['structured_data_score']
-    crawlability = snapshot['crawlability_score']
-    readiness = snapshot['readiness_score']
-    audit_rows = [
-        ('Structured data', 'Technical', structured_data, 'Present' if snapshot['schema_blocks'] else 'Missing', f"{snapshot['schema_blocks']} JSON-LD block(s)", 'Add valid JSON-LD for your organisation, product or service, and key pages.'),
-        ('Metadata', 'On-page', metadata, 'Present' if metadata == 100 else 'Needs work', f"Title: {'yes' if snapshot['title'] else 'no'} · description: {'yes' if snapshot['description'] else 'no'}", 'Write a unique title and concise meta description that clearly state the offer and audience.'),
-        ('Content coverage', 'Content', content_coverage, 'Present' if content_coverage >= 70 else 'Needs work', f"{snapshot['word_count']} visible words · {len(snapshot['headings'])} headings", 'Add clear question-led headings, original examples, and direct answers to core buyer questions.'),
-        ('Crawlability', 'Technical', crawlability, 'Present' if crawlability == 100 else 'Needs work', 'No noindex directive found' if not snapshot['noindex'] else 'noindex directive detected', 'Allow indexing and add a self-referencing canonical URL on the page.'),
-    ]
-    engines = [
-        {'engine': label, 'visibility_score': score, 'mention_rate': score, 'citations': 1 if status == 'Present' else 0, 'change': 0}
-        for label, _area, score, status, _evidence, _action in audit_rows
-    ]
-    prompts = [
-        {'prompt': label, 'intent': area, 'position': score, 'cited': status, 'leading_brand': evidence, 'opportunity': action}
-        for label, area, score, status, evidence, action in audit_rows
-    ]
-    page_name = snapshot['title'] or project['domain']
-    summary = (
-        f"Live audit of {snapshot['url']} found '{page_name}'. AI-search readiness is {readiness}% based on publicly available page signals "
-        f"({snapshot['word_count']} visible words, {len(snapshot['headings'])} headings, and {snapshot['schema_blocks']} JSON-LD blocks). "
-        'This is a website-derived technical audit, not a claim about live ChatGPT, Claude, or Perplexity answers.'
-    )
-    return {
-        'visibility_score': readiness,
-        'mention_rate': metadata,
-        'citation_rate': content_coverage,
-        'share_of_voice': crawlability,
-        'summary': summary,
-        'engines': engines,
-        'prompts': prompts,
-    }
 
-def analytics_report(project_id, user_id):
-    project = project_for_user(project_id, user_id)
+def analytics_report(workspace_id, user_id):
+    project = workspace_for_user(workspace_id, user_id)
     if not project:
         return None
-    site_audit = latest_site_audit(project_id)
+    site_audit = latest_site_audit(workspace_id)
     if site_audit:
         audit_run = site_audit['run']
         compatibility_run = {
-            'id': audit_run['id'], 'project_id': project_id,
+            'id': audit_run['id'], 'workspace_id': workspace_id,
             'visibility_score': audit_run['readiness_score'],
             'mention_rate': audit_run['metadata_score'],
             'citation_rate': audit_run['content_score'],
@@ -118,24 +71,11 @@ def analytics_report(project_id, user_id):
             'engines': compatibility_engines, 'prompts': compatibility_prompts,
             'history': compatibility_history, 'audit': site_audit,
         }
-    with engine.connect() as conn:
-        run = conn.execute(select(analytics_runs).where(analytics_runs.c.project_id == project_id)
-            .order_by(desc(analytics_runs.c.created_at)).limit(1)).mappings().first()
-        if not run:
-            return {'project': row_to_dict(project), 'run': None, 'engines': [], 'prompts': [], 'history': [], 'audit': None}
-        run = dict(run)
-        if is_legacy_mock_analytics_run(run):
-            return {'project': row_to_dict(project), 'run': None, 'engines': [], 'prompts': [], 'history': [], 'audit': None}
-        engines = [dict(row) for row in conn.execute(select(analytics_engine_metrics).where(
-            analytics_engine_metrics.c.run_id == run['id']).order_by(desc(analytics_engine_metrics.c.visibility_score))).mappings().all()]
-        prompts = [dict(row) for row in conn.execute(select(analytics_prompts).where(
-            analytics_prompts.c.run_id == run['id']).order_by(analytics_prompts.c.position)).mappings().all()]
-        history_rows = conn.execute(select(
-            analytics_runs.c.visibility_score, analytics_runs.c.created_at, analytics_runs.c.summary
-        ).where(analytics_runs.c.project_id == project_id).order_by(desc(analytics_runs.c.created_at)).limit(12)).mappings().all()
-        history = [row_to_dict(row) for row in history_rows if not is_legacy_mock_analytics_run(row)]
-    history.reverse()
-    return {'project': row_to_dict(project), 'run': row_to_dict(run), 'engines': engines, 'prompts': prompts, 'history': history, 'audit': None}
+    # No site audit yet. analytics_runs held the legacy fallback report and was
+    # dropped in T5, so there is no second source - this is the honest
+    # 'not yet run' state rather than a fabricated zero.
+    return {'project': row_to_dict(project), 'run': None, 'engines': [], 'prompts': [],
+            'history': [], 'audit': None}
 
 def provider_evidence_rows(scan_id):
     with engine.connect() as conn:
@@ -159,13 +99,13 @@ def provider_evidence_rows(scan_id):
         evidence.append(item)
     return evidence
 
-def latest_prompt_evidence(project_id, run_id=None):
+def latest_prompt_evidence(workspace_id, run_id=None):
     with engine.connect() as conn:
-        project = conn.execute(select(analytics_projects).where(
-            analytics_projects.c.id == project_id
+        project = conn.execute(select(workspaces).where(
+            workspaces.c.id == workspace_id
         )).mappings().first()
         statement = select(analytics_prompt_scan_runs).where(
-            analytics_prompt_scan_runs.c.project_id == project_id
+            analytics_prompt_scan_runs.c.workspace_id == workspace_id
         )
         if run_id:
             statement = statement.where(analytics_prompt_scan_runs.c.id == run_id)
@@ -198,7 +138,7 @@ def latest_prompt_evidence(project_id, run_id=None):
             analytics_prompt_scan_runs.c.mention_rate, analytics_prompt_scan_runs.c.citation_rate,
             analytics_prompt_scan_runs.c.source_presence_rate, analytics_prompt_scan_runs.c.share_of_voice,
             analytics_prompt_scan_runs.c.created_at, analytics_prompt_scan_runs.c.completed_at,
-        ).where(analytics_prompt_scan_runs.c.project_id == project_id)
+        ).where(analytics_prompt_scan_runs.c.workspace_id == workspace_id)
             .order_by(desc(analytics_prompt_scan_runs.c.created_at)).limit(12)).mappings().all()]
         history_ids = [item['id'] for item in history]
         historical_answers = []

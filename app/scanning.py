@@ -32,7 +32,7 @@ from app.http_client import ProviderAPIError
 from app.jobs import update_analytics_job
 from app.llm import open_model_settings
 from app.metrics import provider_evidence_rows
-from app.models import analytics_answer_sources, analytics_audit_jobs, analytics_competitors, analytics_content_opportunities, analytics_projects, analytics_prompt_scan_runs, analytics_provider_answers, analytics_scan_schedules, analytics_topics, analytics_tracked_prompts
+from app.models import analytics_answer_sources, analytics_audit_jobs, competitors, analytics_content_opportunities, workspaces, analytics_prompt_scan_runs, analytics_provider_answers, analytics_scan_schedules, analytics_topics, analytics_tracked_prompts
 from app.recommendations import open_model_evidence_opportunities, rule_based_opportunities
 from app.routes.pages import index
 
@@ -88,8 +88,8 @@ def run_prompt_scan_job(job_id):
         ).values(status='running', started_at=datetime.utcnow(), completed_at=None, error=None))
         if claimed.rowcount != 1:
             return
-        project = conn.execute(select(analytics_projects).where(
-            analytics_projects.c.id == job['project_id']
+        project = conn.execute(select(workspaces).where(
+            workspaces.c.id == job['workspace_id']
         )).mappings().first()
         prompts = conn.execute(select(
             analytics_tracked_prompts,
@@ -97,11 +97,11 @@ def run_prompt_scan_job(job_id):
         ).outerjoin(
             analytics_topics, analytics_tracked_prompts.c.topic_id == analytics_topics.c.id
         ).where(
-            (analytics_tracked_prompts.c.project_id == job['project_id']) &
+            (analytics_tracked_prompts.c.workspace_id == job['workspace_id']) &
             (analytics_tracked_prompts.c.active.is_(True))
         ).order_by(analytics_tracked_prompts.c.id)).mappings().all()
-        competitors = conn.execute(select(analytics_competitors).where(
-            analytics_competitors.c.project_id == job['project_id']
+        competitor_rows = conn.execute(select(competitors).where(
+            competitors.c.workspace_id == job['workspace_id']
         )).mappings().all()
     if not project or not prompts:
         update_analytics_job(job_id, status='failed_terminal', progress=100, error='Add at least one active tracked prompt first.', completed_at=datetime.utcnow())
@@ -137,15 +137,17 @@ def run_prompt_scan_job(job_id):
 
     project = dict(project)
     prompts = [dict(row) for row in prompts]
-    competitors = [dict(row) for row in competitors]
+    competitor_rows = [dict(row) for row in competitor_rows]
     competitor_snapshot = json.dumps([
-        {'name': competitor['name'], 'domain': competitor.get('domain')}
-        for competitor in competitors
+        # competitors.domains is text[] as of T5; the snapshot keeps its single-domain
+        # shape, taking the first, so stored evidence stays readable by older rows.
+        {'name': c['name'], 'domain': (c.get('domains') or [None])[0]}
+        for c in competitor_rows
     ], ensure_ascii=False)
     region = None
     with engine.connect() as conn:
         schedule = conn.execute(select(analytics_scan_schedules).where(
-            analytics_scan_schedules.c.project_id == project['id']
+            analytics_scan_schedules.c.workspace_id == project['id']
         )).mappings().first()
     if schedule:
         region = schedule['region']
@@ -180,7 +182,7 @@ def run_prompt_scan_job(job_id):
             ))
         else:
             result = conn.execute(insert(analytics_prompt_scan_runs).values(
-                project_id=project['id'], job_id=job_id, provider='Perplexity',
+                workspace_id=project['id'], job_id=job_id, provider='Perplexity',
                 model=f"preset:{os.environ.get('PERPLEXITY_AGENT_PRESET', 'low')}"[:160], region=region,
                 competitor_snapshot=competitor_snapshot,
                 status='running', prompt_count=len(prompts), completed_count=0,
@@ -230,7 +232,7 @@ def run_prompt_scan_job(job_id):
 
     brand_occurrences = sum(text_mentions_alias(row.get('answer_text'), project_brand_aliases(project)) for row in answer_measured)
     competitor_occurrences = 0
-    for competitor in competitors:
+    for competitor in competitor_rows:
         aliases = [competitor['name'], competitor.get('domain')]
         competitor_occurrences += sum(text_mentions_alias(row.get('answer_text'), aliases) for row in answer_measured)
     voice_denominator = brand_occurrences + competitor_occurrences
@@ -255,7 +257,7 @@ def run_prompt_scan_job(job_id):
         if opportunities:
             conn.execute(insert(analytics_content_opportunities), [
                 {
-                    'project_id': project['id'], 'scan_run_id': scan_id, 'source': opportunity_source,
+                    'workspace_id': project['id'], 'scan_run_id': scan_id, 'source': opportunity_source,
                     'title': item['title'][:255], 'rationale': item['rationale'],
                     'evidence_refs': item['evidence_refs'], 'priority': item['priority'],
                     'created_at': datetime.utcnow(),

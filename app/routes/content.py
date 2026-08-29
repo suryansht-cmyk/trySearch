@@ -26,7 +26,11 @@ from sqlalchemy import (
 from app.auth import analytics_user_id
 from app.db import engine
 from app.models import content_documents
-from app.ownership import content_document_for_user
+from app.ownership import (
+    content_document_for_user,
+    content_documents_for_user,
+    workspace_for_user,
+)
 from app.utils import row_to_dict
 
 content_bp = Blueprint('content', __name__)
@@ -115,19 +119,22 @@ def content_documents_endpoint():
             return jsonify({'error': 'Enter a title, brand name, and target topic or keyword.'}), 400
         if content_type not in allowed_types or tone not in allowed_tones:
             return jsonify({'error': 'Choose a valid content type and tone.'}), 400
+        # T5 made content_documents workspace-scoped, so a document can no longer be
+        # created against a bare user. The caller has to say which workspace, and it
+        # has to be one their org membership reaches.
+        workspace_id = data.get('workspace_id')
+        if not workspace_id or not workspace_for_user(workspace_id, user_id):
+            return jsonify({'error': 'Choose a workspace you have access to.'}), 400
         now = datetime.utcnow()
         with engine.begin() as conn:
             result = conn.execute(insert(content_documents).values(
-                user_id=user_id, title=title[:200], brand_name=brand_name[:150], keyword=keyword[:200],
+                workspace_id=workspace_id, title=title[:200], brand_name=brand_name[:150], keyword=keyword[:200],
                 content_type=content_type, tone=tone, content='', seo_title='', meta_description='',
                 outline='', recommendations='', status='Brief', version=0, created_at=now, updated_at=now,
             ))
             document_id = result.inserted_primary_key[0]
         return jsonify({'status': 'success', 'document': row_to_dict(content_document_for_user(document_id, user_id))}), 201
-    with engine.connect() as conn:
-        documents = [row_to_dict(row) for row in conn.execute(select(content_documents).where(
-            content_documents.c.user_id == user_id
-        ).order_by(desc(content_documents.c.updated_at))).mappings().all()]
+    documents = [row_to_dict(row) for row in content_documents_for_user(user_id)]
     return jsonify({'documents': documents})
 
 @content_bp.route('/api/content-studio/documents/<int:document_id>', methods=['GET', 'PATCH', 'DELETE'])

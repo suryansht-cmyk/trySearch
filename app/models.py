@@ -20,6 +20,13 @@ from sqlalchemy import (
     text,
 )
 
+from sqlalchemy import CheckConstraint, ForeignKey, Index, JSON
+from sqlalchemy.dialects.postgresql import ARRAY
+
+# The spec calls for text[]. Postgres gets exactly that; SQLite, which every test
+# runs on, has no array type and gets JSON instead. Python sees a list either way.
+STRING_ARRAY = ARRAY(Text).with_variant(JSON, 'sqlite')
+
 from app.db import metadata
 
 contacts = Table(
@@ -49,63 +56,93 @@ app_metadata = Table(
     Column('value', String(255), nullable=False),
 )
 
-analytics_projects = Table(
-    'analytics_projects',
+# --- Tenancy (architecture spec 2.1) -----------------------------------------
+# Every workspace-scoped table below carries workspace_id. user_id survives only
+# on users and memberships: ownership is resolved through membership in an org,
+# never by a hand-written predicate on the row.
+
+organizations = Table(
+    'organizations',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('user_id', Integer, nullable=False, index=True),
-    Column('domain', String(255), nullable=False),
+    Column('name', Text, nullable=False),
+    # The spec has plan_id REFERENCES plans(id), but plans does not exist yet -
+    # Stripe and plan gating are week 3+. Column kept, foreign key deferred until
+    # the table it points at is real.
+    Column('plan_id', Integer, nullable=True),
+    Column('stripe_customer_id', Text, nullable=True),
+    Column('created_at', DateTime, nullable=False),
+)
+
+memberships = Table(
+    'memberships',
+    metadata,
+    Column('org_id', Integer, ForeignKey('organizations.id', ondelete='CASCADE'),
+           primary_key=True),
+    Column('user_id', Integer, ForeignKey('users.id', ondelete='CASCADE'),
+           primary_key=True),
+    Column('role', Text, nullable=False),
+    CheckConstraint(
+        "role IN ('owner', 'admin', 'member', 'client_viewer')",
+        name='ck_membership_role',
+    ),
+)
+
+workspaces = Table(
+    'workspaces',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('org_id', Integer, ForeignKey('organizations.id', ondelete='CASCADE'),
+           nullable=False),
+    Column('brand_name', Text, nullable=False),
+    Column('domains', STRING_ARRAY, nullable=False, default=list),
+    Column('geo', Text, nullable=False, server_default='US'),
+    Column('language', Text, nullable=False, server_default='en'),
+    Column('kind', Text, nullable=False, server_default='project'),
+    Column('status', Text, nullable=False, server_default='active'),
+    Column('deleted_at', DateTime, nullable=True),
+    Column('created_at', DateTime, nullable=False),
+    # Not in spec 2.1, kept from workspaces: the crawler, site audit and
+    # RAG modules read both today, and T5 has no mandate to rewrite them.
+    Column('domain', String(255), nullable=True),
     Column('website_url', String(2048), nullable=True),
-    Column('brand_name', String(150), nullable=False),
-    Column('industry', String(150), nullable=False, default='General'),
-    Column('created_at', DateTime, nullable=False),
-    Column('updated_at', DateTime, nullable=False),
+    Column('industry', String(150), nullable=True),
+    Column('updated_at', DateTime, nullable=True),
+    CheckConstraint("kind IN ('project', 'pitch')", name='ck_workspace_kind'),
+    CheckConstraint("status IN ('active', 'soft_deleted')", name='ck_workspace_status'),
+    Index('ix_workspaces_org_active', 'org_id', sqlite_where=text("status = 'active'"),
+          postgresql_where=text("status = 'active'")),
 )
 
-analytics_runs = Table(
-    'analytics_runs',
+brand_aliases = Table(
+    'brand_aliases',
     metadata,
-    Column('id', Integer, primary_key=True),
-    Column('project_id', Integer, nullable=False, index=True),
-    Column('visibility_score', Integer, nullable=False),
-    Column('mention_rate', Integer, nullable=False),
-    Column('citation_rate', Integer, nullable=False),
-    Column('share_of_voice', Integer, nullable=False),
-    Column('summary', Text, nullable=False),
-    Column('created_at', DateTime, nullable=False),
+    Column('workspace_id', Integer, ForeignKey('workspaces.id', ondelete='CASCADE'),
+           primary_key=True),
+    Column('alias', Text, primary_key=True),
 )
 
-analytics_engine_metrics = Table(
-    'analytics_engine_metrics',
+competitors = Table(
+    'competitors',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('run_id', Integer, nullable=False, index=True),
-    Column('engine', String(80), nullable=False),
-    Column('visibility_score', Integer, nullable=False),
-    Column('mention_rate', Integer, nullable=False),
-    Column('citations', Integer, nullable=False),
-    Column('change', Integer, nullable=False),
+    Column('workspace_id', Integer, ForeignKey('workspaces.id', ondelete='CASCADE'),
+           nullable=False, index=True),
+    Column('name', Text, nullable=False),
+    Column('domains', STRING_ARRAY, nullable=False, default=list),
+    Column('aliases', STRING_ARRAY, nullable=False, default=list),
+    Column('created_at', DateTime, nullable=True),
+    UniqueConstraint('workspace_id', 'name', name='uq_competitor_name'),
 )
 
-analytics_prompts = Table(
-    'analytics_prompts',
-    metadata,
-    Column('id', Integer, primary_key=True),
-    Column('run_id', Integer, nullable=False, index=True),
-    Column('prompt', Text, nullable=False),
-    Column('intent', String(80), nullable=False),
-    Column('position', Integer, nullable=False),
-    Column('cited', String(8), nullable=False),
-    Column('leading_brand', String(150), nullable=False),
-    Column('opportunity', String(255), nullable=False),
-)
+
+
 
 analytics_audit_jobs = Table(
     'analytics_audit_jobs',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('project_id', Integer, nullable=False, index=True),
-    Column('user_id', Integer, nullable=False, index=True),
+    Column('workspace_id', Integer, nullable=False, index=True),
     Column('job_type', String(40), nullable=False),
     Column('provider', String(40), nullable=True),
     Column('status', String(32), nullable=False),
@@ -122,7 +159,7 @@ analytics_site_audits = Table(
     'analytics_site_audits',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('project_id', Integer, nullable=False, index=True),
+    Column('workspace_id', Integer, nullable=False, index=True),
     Column('job_id', Integer, nullable=True, index=True),
     Column('status', String(32), nullable=False),
     Column('source_type', String(40), nullable=False, default='website_crawl'),
@@ -199,7 +236,7 @@ analytics_rag_documents = Table(
     'analytics_rag_documents',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('project_id', Integer, nullable=False, index=True),
+    Column('workspace_id', Integer, nullable=False, index=True),
     Column('audit_id', Integer, nullable=False, index=True),
     Column('page_id', Integer, nullable=False, index=True),
     Column('url', String(2048), nullable=False),
@@ -215,7 +252,7 @@ analytics_rag_chunks = Table(
     'analytics_rag_chunks',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('project_id', Integer, nullable=False, index=True),
+    Column('workspace_id', Integer, nullable=False, index=True),
     Column('audit_id', Integer, nullable=False, index=True),
     Column('document_id', Integer, nullable=False, index=True),
     Column('chunk_index', Integer, nullable=False),
@@ -230,7 +267,7 @@ analytics_rag_insights = Table(
     'analytics_rag_insights',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('project_id', Integer, nullable=False, index=True),
+    Column('workspace_id', Integer, nullable=False, index=True),
     Column('audit_id', Integer, nullable=False, index=True),
     Column('question', Text, nullable=False),
     Column('provider', String(80), nullable=False),
@@ -247,8 +284,7 @@ gsc_connections = Table(
     'gsc_connections',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('project_id', Integer, nullable=False, unique=True),
-    Column('user_id', Integer, nullable=False, index=True),
+    Column('workspace_id', Integer, nullable=False),
     Column('encrypted_refresh_token', Text, nullable=True),
     Column('encrypted_access_token', Text, nullable=True),
     Column('token_expires_at', DateTime, nullable=True),
@@ -258,6 +294,7 @@ gsc_connections = Table(
     Column('last_error', Text, nullable=True),
     Column('created_at', DateTime, nullable=False),
     Column('updated_at', DateTime, nullable=False),
+    UniqueConstraint('workspace_id', name='uq_gsc_connections_workspace_id'),
 )
 
 gsc_properties = Table(
@@ -275,7 +312,7 @@ gsc_sync_runs = Table(
     'gsc_sync_runs',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('project_id', Integer, nullable=False, index=True),
+    Column('workspace_id', Integer, nullable=False, index=True),
     Column('connection_id', Integer, nullable=False, index=True),
     Column('property_url', String(2048), nullable=False),
     Column('status', String(32), nullable=False),
@@ -305,28 +342,18 @@ analytics_topics = Table(
     'analytics_topics',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('project_id', Integer, nullable=False, index=True),
+    Column('workspace_id', Integer, nullable=False, index=True),
     Column('name', String(180), nullable=False),
     Column('created_at', DateTime, nullable=False),
-    UniqueConstraint('project_id', 'name', name='uq_analytics_topic'),
+    UniqueConstraint('workspace_id', 'name', name='uq_analytics_topic'),
 )
 
-analytics_competitors = Table(
-    'analytics_competitors',
-    metadata,
-    Column('id', Integer, primary_key=True),
-    Column('project_id', Integer, nullable=False, index=True),
-    Column('name', String(180), nullable=False),
-    Column('domain', String(255), nullable=True),
-    Column('created_at', DateTime, nullable=False),
-    UniqueConstraint('project_id', 'name', name='uq_analytics_competitor'),
-)
 
 analytics_tracked_prompts = Table(
     'analytics_tracked_prompts',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('project_id', Integer, nullable=False, index=True),
+    Column('workspace_id', Integer, nullable=False, index=True),
     Column('topic_id', Integer, nullable=True, index=True),
     Column('prompt', Text, nullable=False),
     Column('intent', String(80), nullable=False, default='Discovery'),
@@ -339,7 +366,7 @@ analytics_prompt_scan_runs = Table(
     'analytics_prompt_scan_runs',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('project_id', Integer, nullable=False, index=True),
+    Column('workspace_id', Integer, nullable=False, index=True),
     Column('job_id', Integer, nullable=True, index=True),
     Column('provider', String(40), nullable=False),
     Column('model', String(160), nullable=False),
@@ -402,7 +429,7 @@ analytics_scan_schedules = Table(
     'analytics_scan_schedules',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('project_id', Integer, nullable=False, unique=True),
+    Column('workspace_id', Integer, nullable=False),
     Column('enabled', Boolean, nullable=False, default=False),
     Column('frequency', String(20), nullable=False, default='weekly'),
     Column('region', String(8), nullable=True),
@@ -410,13 +437,14 @@ analytics_scan_schedules = Table(
     Column('last_run_at', DateTime, nullable=True),
     Column('created_at', DateTime, nullable=False),
     Column('updated_at', DateTime, nullable=False),
+    UniqueConstraint('workspace_id', name='uq_analytics_scan_schedules_workspace_id'),
 )
 
 analytics_content_opportunities = Table(
     'analytics_content_opportunities',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('project_id', Integer, nullable=False, index=True),
+    Column('workspace_id', Integer, nullable=False, index=True),
     Column('scan_run_id', Integer, nullable=True, index=True),
     Column('source', String(80), nullable=False),
     Column('title', String(255), nullable=False),
@@ -426,101 +454,18 @@ analytics_content_opportunities = Table(
     Column('created_at', DateTime, nullable=False),
 )
 
-prompt_collections = Table(
-    'prompt_collections',
-    metadata,
-    Column('id', Integer, primary_key=True),
-    Column('user_id', Integer, nullable=False, index=True),
-    Column('name', String(150), nullable=False),
-    Column('brand_name', String(150), nullable=False),
-    Column('website', String(255), nullable=True),
-    Column('created_at', DateTime, nullable=False),
-    Column('updated_at', DateTime, nullable=False),
-)
 
-prompt_queries = Table(
-    'prompt_queries',
-    metadata,
-    Column('id', Integer, primary_key=True),
-    Column('collection_id', Integer, nullable=False, index=True),
-    Column('prompt', Text, nullable=False),
-    Column('engine', String(80), nullable=False),
-    Column('intent', String(80), nullable=False),
-    Column('created_at', DateTime, nullable=False),
-    Column('updated_at', DateTime, nullable=False),
-)
 
-prompt_query_results = Table(
-    'prompt_query_results',
-    metadata,
-    Column('id', Integer, primary_key=True),
-    Column('query_id', Integer, nullable=False, index=True),
-    Column('visibility_score', Integer, nullable=False),
-    Column('brand_position', Integer, nullable=False),
-    Column('cited', String(8), nullable=False),
-    Column('leading_brand', String(150), nullable=False),
-    Column('answer_summary', Text, nullable=False),
-    Column('recommendation', Text, nullable=False),
-    Column('created_at', DateTime, nullable=False),
-)
 
-visibility_watchlists = Table(
-    'visibility_watchlists',
-    metadata,
-    Column('id', Integer, primary_key=True),
-    Column('user_id', Integer, nullable=False, index=True),
-    Column('name', String(150), nullable=False),
-    Column('brand_name', String(150), nullable=False),
-    Column('website', String(255), nullable=True),
-    Column('topic', String(150), nullable=False),
-    Column('created_at', DateTime, nullable=False),
-    Column('updated_at', DateTime, nullable=False),
-)
 
-visibility_scans = Table(
-    'visibility_scans',
-    metadata,
-    Column('id', Integer, primary_key=True),
-    Column('watchlist_id', Integer, nullable=False, index=True),
-    Column('visibility_score', Integer, nullable=False),
-    Column('mentions_found', Integer, nullable=False),
-    Column('citations_found', Integer, nullable=False),
-    Column('competitor_mentions', Integer, nullable=False),
-    Column('summary', Text, nullable=False),
-    Column('created_at', DateTime, nullable=False),
-)
 
-visibility_engine_results = Table(
-    'visibility_engine_results',
-    metadata,
-    Column('id', Integer, primary_key=True),
-    Column('scan_id', Integer, nullable=False, index=True),
-    Column('engine', String(80), nullable=False),
-    Column('visibility_score', Integer, nullable=False),
-    Column('mentions', Integer, nullable=False),
-    Column('citations', Integer, nullable=False),
-    Column('change', Integer, nullable=False),
-)
 
-visibility_mentions = Table(
-    'visibility_mentions',
-    metadata,
-    Column('id', Integer, primary_key=True),
-    Column('scan_id', Integer, nullable=False, index=True),
-    Column('engine', String(80), nullable=False),
-    Column('query', Text, nullable=False),
-    Column('appearance', String(80), nullable=False),
-    Column('sentiment', String(30), nullable=False),
-    Column('cited', String(8), nullable=False),
-    Column('competitor', String(150), nullable=False),
-    Column('action', Text, nullable=False),
-)
 
 content_documents = Table(
     'content_documents',
     metadata,
     Column('id', Integer, primary_key=True),
-    Column('user_id', Integer, nullable=False, index=True),
+    Column('workspace_id', Integer, nullable=False, index=True),
     Column('title', String(200), nullable=False),
     Column('brand_name', String(150), nullable=False),
     Column('keyword', String(200), nullable=False),
@@ -537,20 +482,3 @@ content_documents = Table(
     Column('updated_at', DateTime, nullable=False),
 )
 
-master_workspaces = Table(
-    'master_workspaces',
-    metadata,
-    Column('id', Integer, primary_key=True),
-    Column('user_id', Integer, nullable=False, unique=True),
-    Column('brand_name', String(150), nullable=False),
-    Column('domain', String(255), nullable=False),
-    Column('industry', String(150), nullable=False),
-    Column('topic', String(200), nullable=False),
-    Column('goal', String(200), nullable=False),
-    Column('analytics_project_id', Integer, nullable=False),
-    Column('visibility_watchlist_id', Integer, nullable=False),
-    Column('prompt_collection_id', Integer, nullable=False),
-    Column('content_document_id', Integer, nullable=False),
-    Column('created_at', DateTime, nullable=False),
-    Column('updated_at', DateTime, nullable=False),
-)

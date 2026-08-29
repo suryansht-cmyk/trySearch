@@ -9,6 +9,7 @@ os.environ['DATABASE_URL'] = 'sqlite://'
 os.environ['SECRET_KEY'] = 'rag-test-secret'
 
 import server_pg  # noqa: E402
+from conftest import create_workspace  # noqa: E402
 from app.rag import chunking  # noqa: E402
 from app import db  # noqa: E402
 from app import http_client  # noqa: E402
@@ -80,11 +81,7 @@ class RagPipelineTests(unittest.TestCase):
 
     def test_site_audit_persists_retrievable_public_page_copy(self):
         now = datetime.utcnow()
-        with db.engine.begin() as conn:
-            project_id = conn.execute(insert(models.analytics_projects).values(
-                user_id=1, domain='example.com', website_url='https://example.com/',
-                brand_name='Example', industry='Software', created_at=now, updated_at=now,
-            )).inserted_primary_key[0]
+        workspace_id = create_workspace(user_id=1, created_at=now)
         page = {
             'fetched': True, 'requested_url': 'https://example.com/research',
             'url': 'https://example.com/research', 'http_status': 200,
@@ -108,7 +105,7 @@ class RagPipelineTests(unittest.TestCase):
             'metadata_score': 100, 'content_score': 70,
             'crawlability_score': 100, 'structured_data_score': 100,
         }
-        audit_id = jobs.persist_site_audit(project_id, None, crawl)
+        audit_id = jobs.persist_site_audit(workspace_id, None, crawl)
         with db.engine.connect() as conn:
             document_count = conn.execute(select(func.count()).select_from(
                 models.analytics_rag_documents
@@ -125,7 +122,7 @@ class RagPipelineTests(unittest.TestCase):
             with client.session_transaction() as session:
                 session['user_id'] = 1
             response = client.get(
-                f'/api/v1/analytics/projects/{project_id}/rag',
+                f'/api/v1/analytics/projects/{workspace_id}/rag',
                 query_string={'query': 'benchmark methodology sources'},
             )
             self.assertEqual(response.status_code, 200)
@@ -135,7 +132,7 @@ class RagPipelineTests(unittest.TestCase):
 
             with patch.dict(os.environ, {'HF_TOKEN': '', 'OLLAMA_BASE_URL': ''}, clear=False):
                 response = client.post(
-                    f'/api/v1/analytics/projects/{project_id}/rag',
+                    f'/api/v1/analytics/projects/{workspace_id}/rag',
                     json={'question': 'What does the benchmark methodology include?'},
                 )
             self.assertEqual(response.status_code, 201)

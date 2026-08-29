@@ -24,16 +24,21 @@ import threading
 
 from app.crawler.crawl import crawl_website
 from app.db import engine
-from app.models import analytics_audit_findings, analytics_audit_jobs, analytics_audit_pages, analytics_projects, analytics_site_audits, analytics_sitemaps
+from app.models import analytics_audit_findings, analytics_audit_jobs, analytics_audit_pages, analytics_site_audits, analytics_sitemaps, memberships, workspaces
 from app.rag.answers import generate_standard_rag_insights
 from app.rag.index import index_rag_page, rag_index_summary
 from app.utils import row_to_dict
 
-def create_analytics_job(project, user_id, job_type, provider=None):
+def create_analytics_job(workspace, job_type, provider=None):
+    """Queue a job for a workspace.
+
+    T5 dropped analytics_audit_jobs.user_id: a job belongs to a workspace, and who
+    may see it follows from org membership rather than from a column on the row.
+    """
     now = datetime.utcnow()
     with engine.begin() as conn:
         result = conn.execute(insert(analytics_audit_jobs).values(
-            project_id=project['id'], user_id=user_id, job_type=job_type,
+            workspace_id=workspace['id'], job_type=job_type,
             provider=provider, status='queued', progress=0, total_items=0,
             completed_items=0, error=None, created_at=now,
             started_at=None, completed_at=None,
@@ -45,18 +50,25 @@ def update_analytics_job(job_id, **values):
         conn.execute(update(analytics_audit_jobs).where(analytics_audit_jobs.c.id == job_id).values(**values))
 
 def analytics_job_for_user(job_id, user_id):
+    """A job is visible when the user belongs to the org owning its workspace."""
     with engine.connect() as conn:
-        row = conn.execute(select(analytics_audit_jobs).where(
-            (analytics_audit_jobs.c.id == job_id) & (analytics_audit_jobs.c.user_id == user_id)
-        )).mappings().first()
+        row = conn.execute(
+            select(analytics_audit_jobs)
+            .join(workspaces, workspaces.c.id == analytics_audit_jobs.c.workspace_id)
+            .join(memberships, memberships.c.org_id == workspaces.c.org_id)
+            .where(
+                (analytics_audit_jobs.c.id == job_id)
+                & (memberships.c.user_id == user_id)
+            )
+        ).mappings().first()
     return row_to_dict(row) if row else None
 
-def persist_site_audit(project_id, job_id, crawl):
+def persist_site_audit(workspace_id, job_id, crawl):
     """Persist the aggregate, every selected page, sitemap, and finding atomically."""
     now = datetime.utcnow()
     with engine.begin() as conn:
         result = conn.execute(insert(analytics_site_audits).values(
-            project_id=project_id, job_id=job_id, status=crawl['status'],
+            workspace_id=workspace_id, job_id=job_id, status=crawl['status'],
             source_type='website_crawl', start_url=crawl['start_url'][:2048],
             final_url=(crawl.get('final_url') or '')[:2048] or None,
             pages_discovered=crawl['pages_discovered'], pages_audited=crawl['pages_audited'],
@@ -100,17 +112,17 @@ def persist_site_audit(project_id, job_id, crawl):
                 ))
             if page.get('fetched'):
                 index_rag_page(
-                    conn, project_id=project_id, audit_id=audit_id,
+                    conn, workspace_id=workspace_id, audit_id=audit_id,
                     page_id=page_id, page=page, created_at=now,
                 )
 
-        conn.execute(update(analytics_projects).where(analytics_projects.c.id == project_id).values(updated_at=now))
+        conn.execute(update(workspaces).where(workspaces.c.id == workspace_id).values(updated_at=now))
     return audit_id
 
-def latest_site_audit(project_id):
+def latest_site_audit(workspace_id):
     with engine.connect() as conn:
         audit = conn.execute(select(analytics_site_audits).where(
-            analytics_site_audits.c.project_id == project_id
+            analytics_site_audits.c.workspace_id == workspace_id
         ).order_by(desc(analytics_site_audits.c.created_at)).limit(1)).mappings().first()
         if not audit:
             return None
@@ -128,7 +140,7 @@ def latest_site_audit(project_id):
             analytics_site_audits.c.id, analytics_site_audits.c.status,
             analytics_site_audits.c.readiness_score, analytics_site_audits.c.pages_audited,
             analytics_site_audits.c.created_at,
-        ).where(analytics_site_audits.c.project_id == project_id)
+        ).where(analytics_site_audits.c.workspace_id == workspace_id)
             .order_by(desc(analytics_site_audits.c.created_at)).limit(12)).mappings().all()]
     history.reverse()
     return {
@@ -150,8 +162,8 @@ def run_site_audit_job(job_id):
         ).values(status='running', started_at=datetime.utcnow(), completed_at=None, error=None))
         if claimed.rowcount != 1:
             return
-        project = conn.execute(select(analytics_projects).where(
-            analytics_projects.c.id == job['project_id']
+        project = conn.execute(select(workspaces).where(
+            workspaces.c.id == job['workspace_id']
         )).mappings().first()
         existing_audit = conn.execute(select(
             analytics_site_audits.c.id, analytics_site_audits.c.status,

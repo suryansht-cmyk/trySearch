@@ -133,7 +133,7 @@ def create_rag_insight(project, audit_id, question, *, allow_representative=Fals
     now = datetime.utcnow()
     with engine.begin() as conn:
         result = conn.execute(insert(analytics_rag_insights).values(
-            project_id=project['id'], audit_id=audit_id, question=question[:1000],
+            workspace_id=project['id'], audit_id=audit_id, question=question[:1000],
             provider=generated['provider'][:80], model=generated['model'][:160], status='succeeded',
             answer_text=generated['answer_text'], evidence_refs=json.dumps(generated['evidence_refs']),
             retrieved_chunk_count=len(retrieved), error=provider_error, created_at=now,
