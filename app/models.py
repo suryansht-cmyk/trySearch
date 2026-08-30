@@ -147,6 +147,8 @@ analytics_audit_jobs = Table(
     metadata,
     Column('id', Integer, primary_key=True),
     Column('workspace_id', Integer, nullable=False, index=True),
+    # Carried through to the run, so metrics can exclude on-demand scans.
+    Column('run_type', Text, nullable=False, server_default='scheduled'),
     Column('job_type', String(40), nullable=False),
     Column('provider', String(40), nullable=True),
     Column('status', String(32), nullable=False),
@@ -370,6 +372,9 @@ analytics_prompt_scan_runs = Table(
     'analytics_prompt_scan_runs',
     metadata,
     Column('id', Integer, primary_key=True),
+    # PRD 13: on-demand runs are excluded from metrics, because they happen at the
+    # moment someone is optimising and would bias every score upward.
+    Column('run_type', Text, nullable=False, server_default='scheduled'),
     Column('workspace_id', Integer, nullable=False, index=True),
     Column('job_id', Integer, nullable=True, index=True),
     Column('provider', String(40), nullable=False),
@@ -541,4 +546,27 @@ mentions = Table(
     Column('char_offset', Integer, nullable=False),
     CheckConstraint("entity_type IN ('brand', 'competitor')",
                     name='ck_mentions_entity_type'),
+)
+
+
+metrics_daily = Table(
+    'metrics_daily',
+    metadata,
+    Column('workspace_id', Integer, nullable=False),
+    Column('date', Date, nullable=False),
+    # NULL means the blended row across engines. A real PRIMARY KEY cannot contain
+    # NULL, so uniqueness is a functional index over COALESCE below - which behaves
+    # identically on Postgres and SQLite.
+    Column('engine_id', Integer, nullable=True),
+    Column('visibility_score', Float, nullable=True),
+    Column('mention_rate', Float, nullable=True),
+    Column('position_score', Float, nullable=True),
+    Column('citation_rate', Float, nullable=True),
+    Column('sov', Float, nullable=True),
+    Column('sentiment_index', Float, nullable=True),
+    Column('answer_count', Integer, nullable=False, default=0),
+    Column('created_at', DateTime, nullable=False),
+    Column('updated_at', DateTime, nullable=False),
+    Index('uq_metrics_daily_key', 'workspace_id', 'date',
+          text('coalesce(engine_id, -1)'), unique=True),
 )

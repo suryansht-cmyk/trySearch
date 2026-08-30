@@ -28,7 +28,7 @@ from app.rag.answers import generate_standard_rag_insights
 from app.rag.index import index_rag_page, rag_index_summary
 from app.utils import row_to_dict
 
-def create_analytics_job(workspace, job_type, provider=None):
+def create_analytics_job(workspace, job_type, provider=None, run_type='scheduled'):
     """Queue a job for a workspace.
 
     T5 dropped analytics_audit_jobs.user_id: a job belongs to a workspace, and who
@@ -37,7 +37,7 @@ def create_analytics_job(workspace, job_type, provider=None):
     now = datetime.utcnow()
     with engine.begin() as conn:
         result = conn.execute(insert(analytics_audit_jobs).values(
-            workspace_id=workspace['id'], job_type=job_type,
+            workspace_id=workspace['id'], job_type=job_type, run_type=run_type,
             provider=provider, status='queued', progress=0, total_items=0,
             completed_items=0, error=None, created_at=now,
             started_at=None, completed_at=None,

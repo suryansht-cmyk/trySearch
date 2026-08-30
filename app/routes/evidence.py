@@ -62,7 +62,8 @@ def start_analytics_prompt_scan(workspace_id):
         return jsonify({'status': 'accepted', 'job': row_to_dict(active)}), 202
     # Enqueue only. The CLI worker executes it; nothing runs inside the web
     # process, so a scan cannot block a gunicorn thread or die on deploy.
-    job_id = create_analytics_job(project, 'prompt_scan', provider='Perplexity')
+    job_id = create_analytics_job(project, 'prompt_scan', provider='Perplexity',
+                             run_type='on_demand')
     return jsonify({'status': 'accepted', 'job_id': job_id}), 202
 
 @evidence_bp.route('/api/analytics/projects/<int:workspace_id>/evidence', methods=['GET'])

@@ -27,6 +27,7 @@ import time
 
 from app.config import PERPLEXITY_MAX_PROMPTS_PER_SCAN
 from app.costs import ceiling_status, record_usage
+from app.rollup import rollup_workspace_day
 from app.db import engine
 from app.engines.perplexity import call_perplexity_answer, call_perplexity_search, normalise_perplexity_sources, perplexity_answer_citations, perplexity_answer_text
 from app.extraction.pipeline import (
@@ -242,6 +243,7 @@ def run_prompt_scan_job(job_id):
         else:
             result = conn.execute(insert(analytics_prompt_scan_runs).values(
                 workspace_id=project['id'], job_id=job_id, provider='Perplexity',
+                run_type=job.get('run_type') or 'scheduled',
                 model=f"preset:{os.environ.get('PERPLEXITY_AGENT_PRESET', 'low')}"[:160], region=region,
                 competitor_snapshot=competitor_snapshot,
                 status='running', prompt_count=len(prompts), completed_count=0,
@@ -361,6 +363,10 @@ def run_prompt_scan_job(job_id):
             recommendation_summary=summary, error='\n'.join(failures)[:5000] if failures else None,
             completed_at=datetime.utcnow(),
         ))
+    # Roll up into metrics_daily, the only table dashboards read. Idempotent, so a
+    # retried job recomputes the day rather than double-counting it.
+    rollup_workspace_day(workspace_id, datetime.utcnow().date())
+
     final_job_status = 'succeeded' if evidence_rows and any(row['status'] in {'succeeded', 'partial'} for row in evidence_rows) else 'failed_terminal'
     update_analytics_job(
         job_id, status=final_job_status, progress=100, completed_items=len(prompts), total_items=len(prompts),

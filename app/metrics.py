@@ -2,81 +2,51 @@
 
 from sqlalchemy import (
     case,
-    create_engine,
-    MetaData,
-    Table,
-    Column,
-    Boolean,
-    Float,
-    Integer,
-    String,
-    Text,
-    DateTime,
-    UniqueConstraint,
     select,
-    insert,
     update,
     desc,
     func,
-    text,
 )
 import hashlib
 import json
 
 from app.crawler.fetch import normalise_site_host
-from app.crawler.scoring import fetch_website_snapshot, score_website_snapshot
-from app.db import engine, metadata
+from app.db import engine
 from app.extraction.mentions import domain_matches, project_brand_aliases, text_mentions_alias
 from app.jobs import latest_site_audit
 from app.models import extractions, analytics_answer_sources, analytics_content_opportunities, workspaces, analytics_prompt_scan_runs, analytics_provider_answers, analytics_topics, analytics_tracked_prompts
+from app.rollup import latest_metrics, latest_metrics_all_engines
 from app.tenancy import workspace_for_member
 from app.utils import row_to_dict
 
 
 def analytics_report(workspace_id, user_id):
+    """Dashboard payload. Reads metrics_daily and nothing else for its numbers.
+
+    The previous version synthesised an "engines" list out of site-crawl sub-scores
+    - Metadata, Content, Crawlability, Structured data - and rendered them where AI
+    engines belong. That is a crawl score wearing a visibility score's clothes, and
+    it is gone. Site health is still reported, in its own section, as itself.
+    """
     project = workspace_for_member(workspace_id, user_id)
     if not project:
         return None
-    site_audit = latest_site_audit(workspace_id)
-    if site_audit:
-        audit_run = site_audit['run']
-        compatibility_run = {
-            'id': audit_run['id'], 'workspace_id': workspace_id,
-            'visibility_score': audit_run['readiness_score'],
-            'mention_rate': audit_run['metadata_score'],
-            'citation_rate': audit_run['content_score'],
-            'share_of_voice': audit_run['crawlability_score'],
-            'summary': audit_run['summary'], 'status': audit_run['status'],
-            'created_at': audit_run['created_at'], 'source_type': 'website_crawl',
-        }
-        compatibility_engines = [
-            {'engine': 'Metadata', 'visibility_score': audit_run['metadata_score'], 'mention_rate': audit_run['metadata_score'], 'citations': 0, 'change': 0},
-            {'engine': 'Content', 'visibility_score': audit_run['content_score'], 'mention_rate': audit_run['content_score'], 'citations': 0, 'change': 0},
-            {'engine': 'Crawlability', 'visibility_score': audit_run['crawlability_score'], 'mention_rate': audit_run['crawlability_score'], 'citations': 0, 'change': 0},
-            {'engine': 'Structured data', 'visibility_score': audit_run['structured_data_score'], 'mention_rate': audit_run['structured_data_score'], 'citations': 0, 'change': 0},
-        ]
-        compatibility_prompts = [
-            {
-                'prompt': finding['code'].replace('_', ' ').title(), 'intent': finding['area'],
-                'position': 0, 'cited': finding['severity'].title(),
-                'leading_brand': finding['evidence'], 'opportunity': finding['recommendation'],
-            }
-            for finding in site_audit['findings'][:20]
-        ]
-        compatibility_history = [
-            {'visibility_score': item['readiness_score'], 'created_at': item['created_at'], 'status': item['status']}
-            for item in site_audit['history']
-        ]
-        return {
-            'project': row_to_dict(project), 'run': compatibility_run,
-            'engines': compatibility_engines, 'prompts': compatibility_prompts,
-            'history': compatibility_history, 'audit': site_audit,
-        }
-    # No site audit yet. analytics_runs held the legacy fallback report and was
-    # dropped in T5, so there is no second source - this is the honest
-    # 'not yet run' state rather than a fabricated zero.
-    return {'project': row_to_dict(project), 'run': None, 'engines': [], 'prompts': [],
-            'history': [], 'audit': None}
+
+    series = latest_metrics(workspace_id)
+    latest = series[0] if series else None
+    per_engine = [row for row in latest_metrics_all_engines(workspace_id)
+                  if row['engine_id'] is not None]
+
+    return {
+        'project': row_to_dict(project),
+        # None means "not yet run" - distinct from a zero score. T11 turns this into
+        # the three explicit empty states.
+        'visibility': row_to_dict(latest) if latest else None,
+        'history': [row_to_dict(row) for row in reversed(series)],
+        'engines': [row_to_dict(row) for row in per_engine],
+        # Site health is a property of the website, not an engine result.
+        'site_health': latest_site_audit(workspace_id),
+    }
 
 def answer_derivations(answer_ids, conn):
     """Per-answer values that used to be flat columns on analytics_provider_answers.
