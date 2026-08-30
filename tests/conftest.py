@@ -121,3 +121,30 @@ def create_workspace(*, user_id, domain='example.com', brand_name='Example',
             updated_at=now,
         )).inserted_primary_key[0]
     return workspace_id
+
+
+def set_extraction(answer_id, *, brand_mentioned, brand_cited, brand_rank=None,
+                   version='test'):
+    """Record the facts T9 moved out of analytics_provider_answers.
+
+    Tests written before T9 asserted on brand_mentioned / brand_cited as columns on
+    the answer row. Those live in the versioned extractions table now; this puts the
+    same facts in their new home so the assertions keep their original meaning.
+    """
+    from datetime import datetime
+
+    from sqlalchemy import insert, update
+
+    from app.db import engine as _engine
+    from app.models import extractions
+
+    with _engine.begin() as conn:
+        conn.execute(update(extractions)
+                     .where((extractions.c.answer_id == answer_id)
+                            & (extractions.c.is_current))
+                     .values(is_current=False))
+        return conn.execute(insert(extractions).values(
+            answer_id=answer_id, extractor_version=version, is_current=True,
+            brand_mentioned=brand_mentioned, brand_rank=brand_rank,
+            brand_cited=brand_cited, created_at=datetime.utcnow(),
+        )).inserted_primary_key[0]

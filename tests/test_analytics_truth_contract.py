@@ -57,7 +57,8 @@ class AnalyticsTruthContractTests(unittest.TestCase):
     def test_partial_provider_results_keep_unmeasured_fields_null(self):
         workspace_id = self.create_project(user_id=91001)
         scan_id = self.create_scan(workspace_id, prompt_count=2)
-        project = {'brand_name': 'Example', 'domain': 'example.com'}
+        project = {'id': workspace_id, 'brand_name': 'Example',
+                   'domain': 'example.com', 'domains': ['example.com']}
 
         scanning.persist_provider_answer(
             scan_id,
@@ -162,10 +163,6 @@ class AnalyticsTruthContractTests(unittest.TestCase):
                     status='succeeded',
                     answer_text='Example is mentioned.',
                     raw_response='{}',
-                    brand_mentioned=True,
-                    brand_cited=False,
-                    source_present=False,
-                    best_source_rank=None,
                     latency_ms=10,
                     error=None,
                     created_at=now,
@@ -222,11 +219,7 @@ class AnalyticsTruthContractTests(unittest.TestCase):
                         status='succeeded',
                         answer_text='Example is mentioned.',
                         raw_response='{}',
-                        brand_mentioned=True,
-                        brand_cited=False,
-                        source_present=False,
-                        best_source_rank=None,
-                        latency_ms=10,
+                                        latency_ms=10,
                         error=None,
                         created_at=now,
                         completed_at=now,

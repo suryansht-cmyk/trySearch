@@ -29,6 +29,12 @@ from app.config import PERPLEXITY_MAX_PROMPTS_PER_SCAN
 from app.costs import ceiling_status, record_usage
 from app.db import engine
 from app.engines.perplexity import call_perplexity_answer, call_perplexity_search, normalise_perplexity_sources, perplexity_answer_citations, perplexity_answer_text
+from app.extraction.pipeline import (
+    categorise_sources,
+    extract_answer,
+    stored_brand_aliases,
+    workspace_competitors,
+)
 from app.extraction.mentions import domain_matches, project_brand_aliases, text_mentions_alias
 from app.http_client import ProviderAPIError
 from app.jobs import update_analytics_job
@@ -83,16 +89,10 @@ def call_with_retries(call, *args, attempts=None):
 def persist_provider_answer(scan_id, prompt, project, search_payload, answer_payload, errors, latency_ms):
     answer_text = perplexity_answer_text(answer_payload or {})
     sources = normalise_perplexity_sources(search_payload or {}, answer_payload or {})
-    aliases = project_brand_aliases(project)
-    citations = perplexity_answer_citations(answer_payload or {})
-    citation_urls = [item if isinstance(item, str) else item.get('url') for item in citations if isinstance(item, (str, dict))]
-    search_results = (search_payload or {}).get('results') or []
-    search_urls = [item.get('url') for item in search_results if isinstance(item, dict)]
     answer_available = bool(answer_payload is not None and answer_text)
-    brand_mentioned = text_mentions_alias(answer_text, aliases) if answer_available else None
-    brand_cited = any(domain_matches(url, project['domain']) for url in citation_urls if url) if answer_available else None
-    source_ranks = [rank for rank, url in enumerate(search_urls, 1) if url and domain_matches(url, project['domain'])]
-    source_present = bool(source_ranks) if search_payload is not None else None
+    # brand_mentioned / brand_cited / rank are no longer frozen onto the answer row.
+    # They are derived below by the versioned extractor, so a formula change can be
+    # replayed over this same immutable answer at zero provider cost.
     status = 'succeeded' if search_payload is not None and answer_available else ('partial' if search_payload is not None or answer_available else 'failed')
     raw_response = json.dumps({'search': search_payload, 'answer': answer_payload}, ensure_ascii=False)
     now = datetime.utcnow()
@@ -105,14 +105,29 @@ def persist_provider_answer(scan_id, prompt, project, search_payload, answer_pay
             model=str(answer_model)[:160], status=status,
             search_request_id=(search_payload or {}).get('id'), answer_request_id=(answer_payload or {}).get('id'),
             answer_text=answer_text or None, raw_response=raw_response,
-            brand_mentioned=brand_mentioned, brand_cited=brand_cited, source_present=source_present,
-            best_source_rank=min(source_ranks) if source_ranks else None, latency_ms=latency_ms,
+            latency_ms=latency_ms,
             error='; '.join(errors)[:2000] if errors else None,
             created_at=now, completed_at=now,
         ))
         answer_id = result.inserted_primary_key[0]
         if sources:
             conn.execute(insert(analytics_answer_sources), [dict(source, answer_id=answer_id) for source in sources])
+        # Same transaction as the answer insert, so an answer is never visible
+        # without its citations categorised.
+        workspace_competitor_rows = workspace_competitors(project['id'], conn)
+        if answer_available:
+            extract_answer(
+                answer={'id': answer_id, 'answer_text': answer_text},
+                workspace=project,
+                competitors=workspace_competitor_rows,
+                aliases=stored_brand_aliases(project['id'], conn),
+                conn=conn,
+            )
+        else:
+            # No answer text means nothing to rank, but the search results are still
+            # evidence and still get categorised.
+            categorise_sources(answer_id, workspace=project,
+                               competitors=workspace_competitor_rows, conn=conn)
     return answer_id
 
 def run_prompt_scan_job(job_id):

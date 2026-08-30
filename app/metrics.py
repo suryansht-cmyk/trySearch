@@ -1,6 +1,7 @@
 """Report assembly over stored evidence."""
 
 from sqlalchemy import (
+    case,
     create_engine,
     MetaData,
     Table,
@@ -27,7 +28,7 @@ from app.crawler.scoring import fetch_website_snapshot, score_website_snapshot
 from app.db import engine, metadata
 from app.extraction.mentions import domain_matches, project_brand_aliases, text_mentions_alias
 from app.jobs import latest_site_audit
-from app.models import analytics_answer_sources, analytics_content_opportunities, workspaces, analytics_prompt_scan_runs, analytics_provider_answers, analytics_topics, analytics_tracked_prompts
+from app.models import extractions, analytics_answer_sources, analytics_content_opportunities, workspaces, analytics_prompt_scan_runs, analytics_provider_answers, analytics_topics, analytics_tracked_prompts
 from app.tenancy import workspace_for_member
 from app.utils import row_to_dict
 
@@ -77,6 +78,55 @@ def analytics_report(workspace_id, user_id):
     return {'project': row_to_dict(project), 'run': None, 'engines': [], 'prompts': [],
             'history': [], 'audit': None}
 
+def answer_derivations(answer_ids, conn):
+    """Per-answer values that used to be flat columns on analytics_provider_answers.
+
+    T9 moved brand_mentioned / brand_cited / brand_rank into the versioned
+    extractions table, and derives source_present / best_source_rank from
+    analytics_answer_sources. Reading them in one place keeps every caller working
+    off the *current* extraction rather than a stale copy frozen at scan time.
+    """
+    if not answer_ids:
+        return {}
+    derived = {
+        answer_id: {'brand_mentioned': None, 'brand_rank': None, 'brand_cited': None,
+                    'source_present': None, 'best_source_rank': None}
+        for answer_id in answer_ids
+    }
+
+    for row in conn.execute(
+        select(extractions).where(
+            extractions.c.answer_id.in_(answer_ids) & extractions.c.is_current)
+    ).mappings():
+        derived[row['answer_id']].update(
+            brand_mentioned=row['brand_mentioned'],
+            brand_rank=row['brand_rank'],
+            brand_cited=row['brand_cited'],
+        )
+
+    for row in conn.execute(
+        select(
+            analytics_answer_sources.c.answer_id,
+            func.count().label('total'),
+            func.min(
+                case((analytics_answer_sources.c.category == 'own',
+                      analytics_answer_sources.c.rank), else_=None)
+            ).label('best_own_rank'),
+        )
+        .where(analytics_answer_sources.c.answer_id.in_(answer_ids))
+        .group_by(analytics_answer_sources.c.answer_id)
+    ).mappings():
+        # source_present means "our own domain appeared in the search results",
+        # not "the search returned anything". None stays reserved for "search did
+        # not run", which is a different fact from "ran and we were absent".
+        derived[row['answer_id']].update(
+            source_present=row['best_own_rank'] is not None,
+            best_source_rank=row['best_own_rank'],
+        )
+
+    return derived
+
+
 def provider_evidence_rows(scan_id):
     with engine.connect() as conn:
         rows = conn.execute(select(
@@ -90,12 +140,14 @@ def provider_evidence_rows(scan_id):
             analytics_topics, analytics_tracked_prompts.c.topic_id == analytics_topics.c.id
         ).where(analytics_provider_answers.c.scan_run_id == scan_id)
             .order_by(analytics_provider_answers.c.id)).mappings().all()
+        derived = answer_derivations([row['id'] for row in rows], conn)
     evidence = []
     for row in rows:
         item = row_to_dict(row)
         item['prompt'] = item.pop('resolved_prompt')
         item['intent'] = item.pop('resolved_intent')
         item['topic_name'] = item.pop('resolved_topic_name')
+        item.update(derived.get(item['id'], {}))
         evidence.append(item)
     return evidence
 
@@ -147,11 +199,15 @@ def latest_prompt_evidence(workspace_id, run_id=None):
                 analytics_provider_answers.c.scan_run_id,
                 analytics_provider_answers.c.prompt_id,
                 analytics_provider_answers.c.prompt_text,
+                analytics_provider_answers.c.id,
                 analytics_provider_answers.c.answer_text,
-                analytics_provider_answers.c.best_source_rank,
             ).where(
                 analytics_provider_answers.c.scan_run_id.in_(history_ids)
             )).mappings().all()]
+            historical_derived = answer_derivations(
+                [a['id'] for a in historical_answers], conn)
+            for answer in historical_answers:
+                answer.update(historical_derived.get(answer['id'], {}))
     for answer in answer_rows:
         answer['sources'] = sources_by_answer.get(answer['id'], [])
         answer.pop('raw_response', None)

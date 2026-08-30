@@ -110,3 +110,34 @@ def register_cli(app):
     function stays directly callable so existing invocations keep working.
     """
     app.cli.command('run-scheduled-analytics')(run_scheduled_analytics_command)
+
+
+def reextract_command(workspace_id):
+    """Re-run extraction over stored answers. Zero provider calls."""
+    from app.extraction.pipeline import EXTRACTOR_VERSION, reextract_workspace
+
+    count = reextract_workspace(workspace_id)
+    print(f'Re-extracted {count} answer(s) for workspace {workspace_id} '
+          f'at extractor version {EXTRACTOR_VERSION}. No provider calls were made.')
+    return count
+
+
+def main(argv=None):
+    import argparse
+
+    parser = argparse.ArgumentParser(prog='python -m app.worker')
+    sub = parser.add_subparsers(dest='command', required=True)
+
+    run = sub.add_parser('run', help='process due schedules and queued jobs')
+    reextract = sub.add_parser(
+        'reextract', help='re-derive extractions from stored answers, at no cost')
+    reextract.add_argument('--workspace', type=int, required=True)
+
+    args = parser.parse_args(argv)
+    if args.command == 'reextract':
+        return reextract_command(args.workspace)
+    return run_scheduled_analytics_command()
+
+
+if __name__ == '__main__':
+    main()

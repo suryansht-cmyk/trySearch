@@ -405,10 +405,6 @@ analytics_provider_answers = Table(
     Column('answer_request_id', String(255), nullable=True),
     Column('answer_text', Text, nullable=True),
     Column('raw_response', Text, nullable=True),
-    Column('brand_mentioned', Boolean, nullable=True),
-    Column('brand_cited', Boolean, nullable=True),
-    Column('source_present', Boolean, nullable=True),
-    Column('best_source_rank', Integer, nullable=True),
     Column('latency_ms', Integer, nullable=True),
     Column('error', Text, nullable=True),
     Column('created_at', DateTime, nullable=False),
@@ -426,6 +422,10 @@ analytics_answer_sources = Table(
     Column('url', String(2048), nullable=False),
     Column('domain', String(255), nullable=True),
     Column('snippet', Text, nullable=True),
+    # T9: own | competitor | editorial | social | forum | developer | other.
+    # Deliberately NOT a separate citations table - a parallel table would leave
+    # two sources of truth for the same evidence (SPRINT Week 2 amendment).
+    Column('category', Text, nullable=True),
     Column('published_at', String(80), nullable=True),
 )
 
@@ -506,4 +506,39 @@ usage_ledger = Table(
         name='ck_usage_ledger_category',
     ),
     Index('ix_usage_ledger_org_created', 'org_id', 'created_at'),
+)
+
+
+extractions = Table(
+    'extractions',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('answer_id', Integer, nullable=False, index=True),
+    Column('extractor_version', Text, nullable=False),
+    Column('is_current', Boolean, nullable=False, default=True),
+    Column('brand_mentioned', Boolean, nullable=False),
+    Column('brand_rank', Integer, nullable=True),
+    Column('brand_cited', Boolean, nullable=False),
+    Column('sentiment', Text, nullable=True),
+    Column('sentiment_conf', Float, nullable=True),
+    Column('summary', Text, nullable=True),
+    Column('created_at', DateTime, nullable=False),
+    # "Exactly one current extraction per answer" is enforced here, by the database,
+    # not by application code. A partial unique index is the only thing that holds
+    # under concurrent re-extraction.
+    Index('uq_extractions_current_answer', 'answer_id', unique=True,
+          sqlite_where=text('is_current'), postgresql_where=text('is_current')),
+)
+
+mentions = Table(
+    'mentions',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('extraction_id', Integer, nullable=False, index=True),
+    Column('entity_type', Text, nullable=False),
+    Column('competitor_id', Integer, nullable=True),
+    Column('rank', Integer, nullable=False),
+    Column('char_offset', Integer, nullable=False),
+    CheckConstraint("entity_type IN ('brand', 'competitor')",
+                    name='ck_mentions_entity_type'),
 )
