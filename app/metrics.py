@@ -16,6 +16,7 @@ from app.extraction.mentions import domain_matches, project_brand_aliases, text_
 from app.jobs import latest_site_audit
 from app.models import extractions, analytics_answer_sources, analytics_content_opportunities, workspaces, analytics_prompt_scan_runs, analytics_provider_answers, analytics_topics, analytics_tracked_prompts
 from app.rollup import latest_metrics, latest_metrics_all_engines
+from app.stats import describe_delta, score_envelope
 from app.tenancy import workspace_for_member
 from app.utils import row_to_dict
 
@@ -37,11 +38,18 @@ def analytics_report(workspace_id, user_id):
     per_engine = [row for row in latest_metrics_all_engines(workspace_id)
                   if row['engine_id'] is not None]
 
+    # Every metric leaves this function as {value, low, high, n} with an explicit
+    # state, never as a bare number. T11: the product's stated differentiator.
+    visibility = score_envelope(latest, has_completed_run=bool(series))
+    previous = series[1] if len(series) > 1 else None
+    visibility['delta'] = describe_delta(
+        visibility.get('visibility_score'),
+        {'value': previous['visibility_score']} if previous else None,
+    )
+
     return {
         'project': row_to_dict(project),
-        # None means "not yet run" - distinct from a zero score. T11 turns this into
-        # the three explicit empty states.
-        'visibility': row_to_dict(latest) if latest else None,
+        'visibility': visibility,
         'history': [row_to_dict(row) for row in reversed(series)],
         'engines': [row_to_dict(row) for row in per_engine],
         # Site health is a property of the website, not an engine result.
