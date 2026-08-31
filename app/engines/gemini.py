@@ -54,3 +54,36 @@ def call_gemini_answer(prompt):
         f'{API_ROOT}/{model}:generateContent?key={api_key}',
         method='POST', payload=payload, timeout=60,
     )
+
+
+def call_gemini_text(system_prompt, user_prompt):
+    """Ungrounded generation, for writing prompts rather than measuring visibility.
+
+    Legitimate without Search grounding: this asks the model to *compose* a prompt
+    set, not to report what the web says. Nothing derived from this becomes a
+    metric - T14's output is reviewed and approved by a human before any scan runs.
+    """
+    api_key = os.environ.get('GEMINI_API_KEY')
+    if not api_key:
+        raise ProviderAPIError('GEMINI_API_KEY is not configured.')
+
+    payload = {
+        'systemInstruction': {'parts': [{'text': system_prompt}]},
+        'contents': [{'role': 'user', 'parts': [{'text': user_prompt}]}],
+        'generationConfig': {'responseMimeType': 'application/json'},
+    }
+    response = external_json_request(
+        f'{API_ROOT}/{gemini_model()}:generateContent?key={api_key}',
+        method='POST', payload=payload, timeout=90,
+    )
+    return gemini_answer_text(response)
+
+
+def gemini_answer_text(payload):
+    """Concatenate the text parts of the first candidate."""
+    for candidate in (payload or {}).get('candidates') or []:
+        parts = ((candidate.get('content') or {}).get('parts')) or []
+        text = ''.join(p.get('text') or '' for p in parts if isinstance(p, dict))
+        if text.strip():
+            return text
+    return ''
