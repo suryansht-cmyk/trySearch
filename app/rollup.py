@@ -200,8 +200,14 @@ def upsert_row(workspace_id, day, engine_id, values, conn):
         ))
 
 
-def rollup_workspace_day(workspace_id, day):
-    """Recompute metrics_daily for one workspace and date. Idempotent."""
+def rollup_workspace_day(workspace_id, day=None):
+    """Recompute metrics_daily for one workspace and date. Idempotent.
+
+    Defaults to the UTC date, never the local one: a caller passing
+    date.today() from a machine already past local midnight would roll up an
+    empty day and blank the score.
+    """
+    day = day or utc_today()
     with engine.begin() as conn:
         by_provider = collect_counts(workspace_id, day, conn)
 

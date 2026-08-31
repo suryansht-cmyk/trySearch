@@ -6,7 +6,7 @@ test_prd_worked_example is the anchor for the whole build. If it returns 44.4 or
 
 import os
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 os.environ['APP_ENV'] = 'development'
 os.environ['DATABASE_URL'] = 'sqlite://'
@@ -231,3 +231,35 @@ class ReadPathTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class UtcDayBoundaryTests(unittest.TestCase):
+    """The rollup buckets by UTC, never the local date.
+
+    Runs are stamped with datetime.utcnow(). Bucketing them with date.today() means
+    that between local midnight and UTC midnight the day's scans are looked up under
+    a date no run carries, collect_counts returns nothing, and metrics_daily records
+    zero answers - the dashboard silently blanks overnight and no test notices,
+    because CI runs in UTC where the two dates agree.
+    """
+
+    def test_rollup_day_defaults_to_utc_not_local(self):
+        from datetime import date as date_cls
+        self.assertEqual(rollup.utc_today(),
+                         datetime.now(timezone.utc).date())
+        # If this ever becomes the local date the bug is back.
+        self.assertIsInstance(rollup.utc_today(), date_cls)
+
+    def test_answers_are_found_on_the_utc_day_they_were_stamped(self):
+        workspace_id = create_workspace(user_id=95009, domain='utc.example',
+                                        brand_name='Utc')
+        stamped = datetime.utcnow()
+        seed_answers(workspace_id, [(True, 1, True)] * 4, when=stamped)
+
+        blended = rollup.rollup_workspace_day(workspace_id)
+        self.assertEqual(blended['answer_count'], 4,
+                         'the default day must match how runs are stamped')
+
+        # And the local date is only safe when it happens to agree with UTC.
+        on_utc_day = rollup.rollup_workspace_day(workspace_id, stamped.date())
+        self.assertEqual(on_utc_day['answer_count'], 4)
